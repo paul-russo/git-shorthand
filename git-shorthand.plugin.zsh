@@ -13,6 +13,7 @@ alias gb="git branch"
 alias gco="git checkout"
 alias gcob="git checkout -b"
 alias gl="git log"
+alias gr="git pull --rebase --autostash"
 
 gcpp () {
 	git commit -m $argv
