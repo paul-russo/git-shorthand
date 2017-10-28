@@ -17,6 +17,7 @@ Currently, the only exception to these rules is the 'rename branch' function `gr
 | `b` | `branch` |
 | `c` | `commit` |
 | `co` | `checkout` |
+| `d` | `diff` |
 | `l` | `list` |
 | `p` | `pull` |
 | `pp` | `push` |
