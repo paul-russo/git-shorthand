@@ -58,3 +58,8 @@ grnb () {
 	git push origin :$oldBranch
 	git push --set-upstream origin $argv
 }
+
+git-obliterate () {
+	git branch -d $argv && 
+	git push origin :$argv
+}
