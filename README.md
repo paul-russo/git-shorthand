@@ -27,3 +27,4 @@ Currently, the only exception to these rules is the 'rename branch' function `gr
 | `s` | `status` |
 | `st` | `stash` |
 | `u` | `-u origin` |
+| `x` | `--staged` |
