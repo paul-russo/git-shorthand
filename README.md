@@ -11,6 +11,13 @@ Currently, the exceptions to these rules are:
 - The 'rename branch' function `grnb`, which is comprised of a sequence of somewhat non-obvious git operations
 - The `git-main-branch` utility function, which dynamically detects whether the repo uses `master` or `main`
 
+## Shell Completions
+When loaded in `zsh` with completion enabled (`compinit`), shorthand commands complete like their underlying `git` subcommands.
+
+Custom completion is also included for shorthand commands that take branch/worktree names, such as:
+- `git-obliterate`, `gwtco`, `gwtd`, `gwtcd`
+- `gnb`, `gnbpp`, `gfmnb`, `gwta`, `gfmwta`, `grnb`, `gcobpp`
+
 ## Definitions
 | Shorthand | Meaning |
 | --------- | ------- |

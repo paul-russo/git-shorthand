@@ -156,3 +156,82 @@ gprm () {
     git fetch origin $(git-main-branch):$(git-main-branch)
     git rebase $(git-main-branch)
 }
+
+# Zsh completion support for shorthand aliases and functions.
+if [[ -n "${ZSH_VERSION-}" ]] && (( $+functions[compdef] )); then
+    autoload -Uz +X _git
+
+    _git_shorthand_local_branches () {
+        local -a branches
+        branches=("${(@f)$(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null)}")
+        _describe -t branches 'local branch' branches
+    }
+
+    _git_shorthand_all_branches () {
+        local -a branches
+        branches=("${(@f)$(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes 2>/dev/null | sed '/\\/HEAD$/d')}")
+        _describe -t branches 'branch' branches
+    }
+
+    _git_shorthand_worktree_branches () {
+        local wt_base
+        wt_base=$(_git-wt-base 2>/dev/null) || return 1
+
+        local -a wt_branches
+        wt_branches=("$wt_base"/*(N:t))
+        (( ${#wt_branches} )) || return 1
+
+        _describe -t branches 'worktree branch' wt_branches
+    }
+
+    _git_shorthand_new_branch_name () {
+        _message 'new branch name'
+    }
+
+    _git_shorthand_gwtd () {
+        _arguments \
+            '--force[force-remove worktree and delete branch]' \
+            '1:branch:_git_shorthand_local_branches'
+    }
+
+    _git_shorthand_gwtcd () {
+        _git_shorthand_worktree_branches || _git_shorthand_local_branches
+    }
+
+    compdef _git \
+        ga=git-add \
+        gaa=git-add \
+        gaas=git-status \
+        gaast=git-stash \
+        gs=git-status \
+        gbs=git-status \
+        gsd=git-diff \
+        gc=git-commit \
+        gsc=git-commit \
+        gaac=git-commit \
+        gaacpp=git-commit \
+        gaascpp=git-commit \
+        gcpp=git-commit \
+        gd=git-diff \
+        gdx=git-diff \
+        gda=git-diff \
+        gst=git-stash \
+        gstl=git-stash \
+        gstpo=git-stash \
+        gp=git-pull \
+        gpr=git-pull \
+        gpp=git-push \
+        gb=git-branch \
+        gco=git-checkout \
+        gcom=git-checkout \
+        gcob=git-checkout \
+        gl=git-log \
+        gfm=git-fetch \
+        gprm=git-rebase
+
+    compdef _git_shorthand_new_branch_name gnb gnbpp gfmnb gwta gfmwta grnb gcobpp
+    compdef _git_shorthand_local_branches git-obliterate
+    compdef _git_shorthand_all_branches gwtco
+    compdef _git_shorthand_gwtd gwtd
+    compdef _git_shorthand_gwtcd gwtcd
+fi
