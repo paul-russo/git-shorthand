@@ -18,6 +18,7 @@ Currently, the exceptions to these rules are:
 | `aa` | `add --a` |
 | `b` | `branch` |
 | `c` | `commit` |
+| `cd` | `cd` (change directory) |
 | `co` | `checkout` |
 | `d` | `diff` / `delete` (in worktree context) |
 | `f` | `fetch` |
@@ -27,6 +28,7 @@ Currently, the exceptions to these rules are:
 | `p` | `pull` |
 | `pp` | `push` |
 | `po` | `pop` |
+| `prune` | `prune` |
 | `r` | `--rebase --autostash` |
 | `rn` | rename |
 | `s` | `status` |
@@ -44,6 +46,13 @@ These commands work with either `master` or `main` branches automatically:
 - `gprm` - Fetch main and rebase current branch on it
 
 ## Worktree Operations
-- `gwta <branch>` - Add new worktree with branch from main
+Worktrees are stored in a `{repo_name}-worktrees/` sibling directory to keep your workspace clean. Worktrees and branches share a 1-to-1 lifecycle — when you remove a worktree, the branch is deleted with it.
+
+- `gwta <branch>` - Add worktree with a new branch from main
+- `gfmwta <branch>` - Fetch main, then add worktree with a new branch from it
+- `gwtco <branch>` - Add worktree for an existing branch (e.g. a remote branch)
 - `gwtl` - List all worktrees
-- `gwtd <worktree>` - Delete/remove worktree
+- `gwtd <branch>` - Remove worktree and delete branch (warns if unmerged)
+- `gwtd --force <branch>` - Force-remove worktree and force-delete branch
+- `gwtcd <branch>` - `cd` into a worktree by branch name
+- `gwtprune` - Prune stale worktree tracking references
