@@ -285,8 +285,6 @@ if [[ -n "${ZSH_VERSION-}" ]]; then
         (( $+functions[compdef] )) || return 1
         (( ${+_git_shorthand_completions_registered} )) && return 0
 
-        autoload -Uz +X _git
-
         compdef _git \
             ga=git-add \
             gaa=git-add \
