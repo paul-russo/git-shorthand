@@ -183,10 +183,19 @@ gwtprune () {
     git worktree prune -v
 }
 
+# Pull from main
+alias gpm="git pull origin \$(git-main-branch)"
+
 # Pull rebase from main
 gprm () {
     git fetch origin $(git-main-branch):$(git-main-branch)
     git rebase $(git-main-branch)
+}
+
+# Prune local branches whose remote tracking branch is gone
+gbprune () {
+    git fetch --prune
+    git branch -vv | grep ': gone]' | awk '{print $1}' | xargs -r git branch -d
 }
 
 # Zsh completion support for shorthand aliases and functions.
@@ -306,6 +315,7 @@ if [[ -n "${ZSH_VERSION-}" ]]; then
             gstl=git-stash \
             gstpo=git-stash \
             gp=git-pull \
+            gpm=git-pull \
             gpr=git-pull \
             gpp=git-push \
             gb=git-branch \
