@@ -1,0 +1,7 @@
+# ShellCheck config for zsh scripts (run with: shellcheck -s bash)
+# These codes are disabled because they flag zsh-specific syntax as errors:
+# - SC2154: $argv, words, functions, compdef are zsh builtins
+# - SC2296: ${(@f)...} is valid zsh parameter expansion
+# - SC2034: branches, seen, expl used in zsh completion context
+
+disable=SC2154,SC2296,SC2034

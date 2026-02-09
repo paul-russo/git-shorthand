@@ -33,63 +33,64 @@ alias gcom="git checkout \$(git-main-branch)"  # Checkout main (when available)
 
 # Git shorthand functions
 gcpp () {
-	git commit -m $argv
+	git commit -m "$argv"
 	git push
 }
 
 gcobpp () {
-	git checkout -b $argv
-	git push -u origin $argv
+	git checkout -b "$argv"
+	git push -u origin "$argv"
 }
 
 gaascpp () {
 	git add --a
 	git status
-	git commit -m $argv
+	git commit -m "$argv"
 	git push
 }
 
 gaacpp () {
 	git add --a
-	git commit -m $argv
+	git commit -m "$argv"
 	git push
 }
 
 gaac () {
 	git add --a
-	git commit -m $argv
+	git commit -m "$argv"
 }
 
 # From https://gist.github.com/lttlrck/9628955
 grnb () {
-	local oldBranch=$(git branch | grep \* | cut -d ' ' -f2)
+	local oldBranch
+	oldBranch=$(git branch | grep -F '*' | cut -d ' ' -f2)
 
-	git branch -m $oldBranch $argv
-	git push origin :$oldBranch
-	git push --set-upstream origin $argv
+	git branch -m "$oldBranch" "$argv"
+	git push origin ":$oldBranch"
+	git push --set-upstream origin "$argv"
 }
 
 git-obliterate () {
-	git branch -d $argv && 
-	git push origin :$argv
+	git branch -d "$argv" &&
+	git push origin ":$argv"
 }
 
 # Git functions for main branch operations
 # New branch from main (without checking out main)
 gnb () {
-    git switch -c $argv $(git-main-branch)
+    git switch -c "$argv" "$(git-main-branch)"
 }
 
 # New branch from main and push
 gnbpp () {
-    git switch -c $argv $(git-main-branch)
-    git push -u origin $argv
+    git switch -c "$argv" "$(git-main-branch)"
+    git push -u origin "$argv"
 }
 
 # Fetch main and new branch from it
 gfmnb () {
-    git fetch origin $(git-main-branch):$(git-main-branch)
-    git switch -c $argv $(git-main-branch)
+    git fetch origin "$(git-main-branch):$(git-main-branch)"
+    git switch -c "$argv" "$(git-main-branch)"
 }
 
 # Worktree operations
@@ -120,29 +121,33 @@ _git-current-wt-target () {
 # Helper: resolve the worktrees base directory for the current repo.
 # Works from the main repo or from inside any worktree.
 _git-wt-base () {
-    local main_wt=$(_git-main-worktree)
+    local main_wt
+    main_wt=$(_git-main-worktree)
     [[ -n "$main_wt" ]] || return 1
     echo "$(dirname "$main_wt")/$(basename "$main_wt")-worktrees"
 }
 
 # Add worktree with a new branch from main
 gwta () {
-    local wt_base=$(_git-wt-base)
+    local wt_base
+    wt_base=$(_git-wt-base)
     mkdir -p "$wt_base"
-    git worktree add -b "$1" "$wt_base/$1" $(git-main-branch)
+    git worktree add -b "$1" "$wt_base/$1" "$(git-main-branch)"
 }
 
 # Fetch main, then add worktree with a new branch from it
 gfmwta () {
-    git fetch origin $(git-main-branch):$(git-main-branch)
-    local wt_base=$(_git-wt-base)
+    git fetch origin "$(git-main-branch):$(git-main-branch)"
+    local wt_base
+    wt_base=$(_git-wt-base)
     mkdir -p "$wt_base"
-    git worktree add -b "$1" "$wt_base/$1" $(git-main-branch)
+    git worktree add -b "$1" "$wt_base/$1" "$(git-main-branch)"
 }
 
 # Add worktree for an existing branch (e.g. a remote branch)
 gwtco () {
-    local wt_base=$(_git-wt-base)
+    local wt_base
+    wt_base=$(_git-wt-base)
     mkdir -p "$wt_base"
     git worktree add "$wt_base/$1" "$1"
 }
@@ -152,13 +157,44 @@ gwtl () {
     git worktree list
 }
 
-# Remove worktree and delete branch (pass --force to force both)
+# Remove worktree and delete branch.
+# Pass --force to force-remove worktree (including submodules/dirty) and force-delete branch.
+# Without --force: tries remove first; retries with --force only when worktree has submodules
+# and is clean (no uncommitted changes). Dirty worktrees always fail unless --force is used.
 gwtd () {
-    local wt_base=$(_git-wt-base)
+    local wt_base
+    wt_base=$(_git-wt-base)
+    local branch branch_force
     if [[ "$1" == "--force" ]]; then
-        git worktree remove --force "$wt_base/$2" && git branch -D "$2"
+        branch="$2"
+        branch_force=1
     else
-        git worktree remove "$wt_base/$1" && git branch -d "$1"
+        branch="$1"
+        branch_force=0
+    fi
+    local wt_path="$wt_base/$branch"
+    if (( branch_force )); then
+        git worktree remove --force "$wt_path" || return 1
+    else
+        local err
+        if ! err=$(git worktree remove "$wt_path" 2>&1); then
+            if [[ "$err" == *"submodules"* ]]; then
+                # Submodule error: only use --force if worktree is clean (no uncommitted changes).
+                if [[ -n "$(git -C "$wt_path" status --porcelain 2>/dev/null)" ]]; then
+                    echo "fatal: worktree has submodules and uncommitted changes; commit or stash first, or use gwtd --force" >&2
+                    return 1
+                fi
+                git worktree remove --force "$wt_path" || return 1
+            else
+                echo "$err" >&2
+                return 1
+            fi
+        fi
+    fi
+    if (( branch_force )); then
+        git branch -D "$branch"
+    else
+        git branch -d "$branch"
     fi
 }
 
@@ -171,10 +207,11 @@ gwtcd () {
     if [[ "$target_branch" == "$main_branch" ]]; then
         local main_wt
         main_wt=$(_git-main-worktree) || return 1
-        cd "$main_wt"
+        cd "$main_wt" || return 1
     else
-        local wt_base=$(_git-wt-base)
-        cd "$wt_base/$target_branch"
+        local wt_base
+        wt_base=$(_git-wt-base) || return 1
+        cd "$wt_base/$target_branch" || return 1
     fi
 }
 
@@ -188,8 +225,8 @@ alias gpm="git pull origin \$(git-main-branch)"
 
 # Pull rebase from main
 gprm () {
-    git fetch origin $(git-main-branch):$(git-main-branch)
-    git rebase $(git-main-branch)
+    git fetch origin "$(git-main-branch):$(git-main-branch)"
+    git rebase "$(git-main-branch)"
 }
 
 # Prune local branches whose remote tracking branch is gone

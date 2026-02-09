@@ -1,0 +1,9 @@
+# ShellSpec spec files use a DSL (Describe, It, When, Mock, End) that ShellCheck
+# doesn't recognize. These codes are expected for test files:
+# - SC2317: DSL keywords appear unreachable
+# - SC2329: Mock/stub functions invoked indirectly by tested code
+# - SC1091: Sourced plugin path
+# - SC3033: add-zsh-hook is valid zsh
+# - SC3010: [[ ]] is valid in zsh (specs run under zsh)
+
+disable=SC2317,SC2329,SC1091,SC3033,SC3010

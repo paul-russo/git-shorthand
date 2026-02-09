@@ -1,5 +1,12 @@
 # git-shorthand
-This is a collection of Git shorthand aliases and functions. There are many like it, but this one is mine.
+This is a collection of Git shorthand aliases and functions.
+
+## Development
+- `just check` – lint the plugin with [ShellCheck](https://www.shellcheck.net/)
+- `just test` – run tests with [ShellSpec](https://shellspec.info/)
+- `just all` – lint and test
+
+There are many like it, but this one is mine.
 It can be installed using a ZSH plugin manager, though it should work in any other BASH-like shell.
 
 ## Usage

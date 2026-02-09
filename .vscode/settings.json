@@ -1,0 +1,6 @@
+{
+  "shellcheck.ignorePatterns": {
+    "**/*.zsh": false
+  },
+  "shellcheck.customArgs": ["-s", "bash"]
+}
