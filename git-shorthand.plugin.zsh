@@ -195,7 +195,7 @@ gprm () {
 # Prune local branches whose remote tracking branch is gone
 gbprune () {
     git fetch --prune
-    git branch -vv | grep ': gone]' | awk '{print $1}' | xargs -r git branch -d
+    git branch -vv | grep ': gone]' | sed 's/^\*//' | awk '{print $1}' | xargs -r git branch -d
 }
 
 # Zsh completion support for shorthand aliases and functions.
