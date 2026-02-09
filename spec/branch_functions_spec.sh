@@ -3,12 +3,12 @@
 Describe 'grnb (rename branch)'
   Mock git
     case "$1" in
+      rev-parse)
+        echo 'feature-old'
+        return 0
+        ;;
       branch)
-        if [[ "${2:-}" = "-m" ]]; then
-          printf '%s\n' "git $*"
-          return 0
-        fi
-        printf '%s\n' '* feature-old'
+        printf '%s\n' "git $*"
         return 0
         ;;
       push)

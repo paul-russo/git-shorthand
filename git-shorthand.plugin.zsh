@@ -33,64 +33,64 @@ alias gcom="git checkout \$(git-main-branch)"  # Checkout main (when available)
 
 # Git shorthand functions
 gcpp () {
-	git commit -m "$argv"
+	git commit -m "$*"
 	git push
 }
 
 gcobpp () {
-	git checkout -b "$argv"
-	git push -u origin "$argv"
+	git checkout -b "$1"
+	git push -u origin "$1"
 }
 
 gaascpp () {
 	git add --a
 	git status
-	git commit -m "$argv"
+	git commit -m "$*"
 	git push
 }
 
 gaacpp () {
 	git add --a
-	git commit -m "$argv"
+	git commit -m "$*"
 	git push
 }
 
 gaac () {
 	git add --a
-	git commit -m "$argv"
+	git commit -m "$*"
 }
 
 # From https://gist.github.com/lttlrck/9628955
 grnb () {
 	local oldBranch
-	oldBranch=$(git branch | grep -F '*' | cut -d ' ' -f2)
+	oldBranch=$(git rev-parse --abbrev-ref HEAD)
 
-	git branch -m "$oldBranch" "$argv"
+	git branch -m "$oldBranch" "$1"
 	git push origin ":$oldBranch"
-	git push --set-upstream origin "$argv"
+	git push --set-upstream origin "$1"
 }
 
 git-obliterate () {
-	git branch -d "$argv" &&
-	git push origin ":$argv"
+	git branch -d "$1" &&
+	git push origin ":$1"
 }
 
 # Git functions for main branch operations
 # New branch from main (without checking out main)
 gnb () {
-    git switch -c "$argv" "$(git-main-branch)"
+    git switch -c "$1" "$(git-main-branch)"
 }
 
 # New branch from main and push
 gnbpp () {
-    git switch -c "$argv" "$(git-main-branch)"
-    git push -u origin "$argv"
+    git switch -c "$1" "$(git-main-branch)"
+    git push -u origin "$1"
 }
 
 # Fetch main and new branch from it
 gfmnb () {
     git fetch origin "$(git-main-branch):$(git-main-branch)"
-    git switch -c "$argv" "$(git-main-branch)"
+    git switch -c "$1" "$(git-main-branch)"
 }
 
 # Worktree operations
