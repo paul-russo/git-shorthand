@@ -43,9 +43,9 @@ Describe 'gbprune (prune gone branches)'
     esac
   End
 
-  It 'fetches with prune and processes gone branches'
+  It 'fetches with prune and force-deletes gone branches'
     When call gbprune
     The output should include 'git fetch --prune'
-    The output should include 'branch'
+    The output should include 'git branch -D gone'
   End
 End

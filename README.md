@@ -59,7 +59,7 @@ These commands work with either `master` or `main` branches automatically:
 - `gfmnb <branch>` - Fetch main, then create new branch from it
 - `gpm` - Pull from main
 - `gprm` - Fetch main and rebase current branch on it
-- `gbprune` - Fetch with prune, then delete local branches whose remote tracking branch is gone
+- `gbprune` - Fetch with prune, then force-delete local branches whose remote tracking branch is gone (handles squash-merged PR branches)
 
 ## Worktree Operations
 Worktrees are stored in a `{repo_name}-worktrees/` sibling directory to keep your workspace clean. Worktrees and branches share a 1-to-1 lifecycle — when you remove a worktree, the branch is deleted with it.
