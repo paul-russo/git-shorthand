@@ -20,11 +20,18 @@ Describe 'gprm (pull rebase from main)'
   End
 End
 
-Describe 'gbprune (prune gone branches)'
+Describe 'gbprune (prune merged branches)'
   Mock git
     case "$1" in
+      symbolic-ref)
+        echo 'refs/remotes/origin/main'
+        ;;
       fetch)
         printf '%s\n' "git $*"
+        return 0
+        ;;
+      rev-parse)
+        echo 'main'
         return 0
         ;;
       branch)
@@ -33,8 +40,21 @@ Describe 'gbprune (prune gone branches)'
           printf '  gone    def456 [origin/gone: gone] old msg\n'
           return 0
         fi
+        if [[ "${2:-}" = "--merged" ]]; then
+          printf '  main    abc123\n'
+          printf '  gone    def456\n'
+          return 0
+        fi
         printf '%s\n' "git $*"
         return 0
+        ;;
+      for-each-ref)
+        printf 'main\n'
+        printf 'gone\n'
+        return 0
+        ;;
+      diff)
+        return 1
         ;;
       *)
         printf '%s\n' "git $*"
@@ -43,7 +63,7 @@ Describe 'gbprune (prune gone branches)'
     esac
   End
 
-  It 'fetches with prune and force-deletes gone branches'
+  It 'fetches with prune and force-deletes branches fully merged into main'
     When call gbprune
     The output should include 'git fetch --prune'
     The output should include 'git branch -D gone'

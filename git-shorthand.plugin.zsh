@@ -229,13 +229,56 @@ gprm () {
     git rebase "$(git-main-branch)"
 }
 
-# Prune local branches whose remote tracking branch is gone
+# Prune local branches that have been fully merged into main (by any method).
+# Handles: upstream gone, regular merge, squash merge, rebase merge.
 gbprune () {
     git fetch --prune
-    git branch -vv | grep ': gone]' | sed 's/^\*//' | awk '{print $1}' | xargs -r git branch -D
+
+    local main_branch main_ref
+    main_branch=$(git-main-branch)
+    main_ref="origin/$main_branch"
+
+    local current
+    current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+
+    local -a to_delete
+    local branch
+
+    # 1. Branches whose upstream remote-tracking ref is gone
+    while read -r branch; do
+        [[ -z "$branch" ]] && continue
+        [[ "$branch" == "$current" ]] && continue
+        [[ "$branch" == "$main_branch" ]] && continue
+        to_delete+=("$branch")
+    done < <(git branch -vv 2>/dev/null | grep ': gone]' | sed 's/^\*//' | awk '{print $1}')
+
+    # 2. Branches whose commits are ancestors of main (regular merge, rebase)
+    while read -r branch; do
+        [[ -z "$branch" ]] && continue
+        [[ "$branch" == "$current" ]] && continue
+        [[ "$branch" == "$main_branch" ]] && continue
+        to_delete+=("$branch")
+    done < <(git branch --merged "$main_ref" 2>/dev/null | sed 's/^\*//' | awk '{print $1}')
+
+    # 3. Branches with identical tree to main (squash merge, etc.)
+    for branch in $(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null); do
+        [[ "$branch" == "$current" ]] && continue
+        [[ "$branch" == "$main_branch" ]] && continue
+        if git diff --quiet "$main_ref" "$branch" 2>/dev/null; then
+            to_delete+=("$branch")
+        fi
+    done
+
+    # Dedupe and delete
+    for branch in "${(u)to_delete[@]}"; do
+        [[ -z "$branch" ]] && continue
+        git branch -D "$branch"
+    done
 }
 
 # Zsh completion support for shorthand aliases and functions.
+# shellcheck disable=SC2153
+#   CURRENT and words are provided by zsh's completion system.
 if [[ -n "${ZSH_VERSION-}" ]]; then
     _git_shorthand_local_branches () {
         local -a branches
