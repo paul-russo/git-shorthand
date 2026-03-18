@@ -25,6 +25,8 @@ Custom completion is also included for shorthand commands that take branch/workt
 - `git-obliterate`, `gwtco`, `gwtd`, `gwtcd`
 - `gnb`, `gnbpp`, `gfmnb`, `gwta`, `gfmwta`, `grnb`, `gcobpp`
 
+Branch/worktree name completion uses the same slash-aware matching as zsh’s stock `_git` completion, so names like `cursor/example-branch` complete correctly (not only one path segment at a time).
+
 ## Definitions
 | Shorthand | Meaning |
 | --------- | ------- |

@@ -281,15 +281,22 @@ gbprune () {
 #   CURRENT and words are provided by zsh's completion system.
 if [[ -n "${ZSH_VERSION-}" ]]; then
     _git_shorthand_local_branches () {
+        local expl
         local -a branches
         branches=("${(@f)$(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null)}")
-        _describe -t branches 'local branch' branches
+        (( ${#branches} )) || return 1
+
+        # -M 'r:|/=* r:|=*' matches across '/' (same as zsh's stock _git / __git_describe_commit).
+        _wanted branches expl 'local branch' compadd -M 'r:|/=* r:|=*' -o nosort -a - branches
     }
 
     _git_shorthand_all_branches () {
+        local expl
         local -a branches
-        branches=("${(@f)$(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes 2>/dev/null | sed '/\\/HEAD$/d')}")
-        _describe -t branches 'branch' branches
+        branches=("${(@f)$(git for-each-ref --format='%(refname:short)' refs/heads refs/remotes 2>/dev/null | sed '\#/HEAD$#d')}")
+        (( ${#branches} )) || return 1
+
+        _wanted branches expl 'branch' compadd -M 'r:|/=* r:|=*' -o nosort -a - branches
     }
 
     _git_shorthand_worktree_branches () {
@@ -323,7 +330,7 @@ if [[ -n "${ZSH_VERSION-}" ]]; then
         (( ${#suggestions} )) || return 1
 
         local expl
-        _wanted branches expl 'worktree branch' compadd -Q -o nosort -- "${suggestions[@]}"
+        _wanted branches expl 'worktree branch' compadd -M 'r:|/=* r:|=*' -Q -o nosort -- "${suggestions[@]}"
     }
 
     _git_shorthand_new_branch_name () {
