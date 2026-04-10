@@ -276,6 +276,11 @@ gbprune () {
     done
 }
 
+# Pull current branch, then prune local branches fully merged into main (see gbprune).
+gpbprune () {
+    git pull && gbprune
+}
+
 # Zsh completion support for shorthand aliases and functions.
 # shellcheck disable=SC2153
 #   CURRENT and words are provided by zsh's completion system.
@@ -403,6 +408,7 @@ if [[ -n "${ZSH_VERSION-}" ]]; then
             gstpo=git-stash \
             gp=git-pull \
             gpm=git-pull \
+            gpbprune=git-pull \
             gpr=git-pull \
             gpp=git-push \
             gb=git-branch \

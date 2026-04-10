@@ -62,6 +62,7 @@ These commands work with either `master` or `main` branches automatically:
 - `gpm` - Pull from main
 - `gprm` - Fetch main and rebase current branch on it
 - `gbprune` - Fetch with prune, then force-delete local branches whose changes are fully in main (handles gone upstream, regular merge, squash merge, rebase merge)
+- `gpbprune` - Pull, then `gbprune` (update current branch, then clean merged local branches)
 
 ## Worktree Operations
 Worktrees are stored in a `{repo_name}-worktrees/` sibling directory to keep your workspace clean. Worktrees and branches share a 1-to-1 lifecycle — when you remove a worktree, the branch is deleted with it.
