@@ -73,5 +73,5 @@ Worktrees are stored in a `{repo_name}-worktrees/` sibling directory to keep you
 - `gwtl` - List all worktrees
 - `gwtd <branch>` - Remove worktree and delete branch (warns if unmerged)
 - `gwtd --force <branch>` - Force-remove worktree and force-delete branch
-- `gwtcd <branch>` - `cd` into a worktree by branch name (`main`/`master` goes to the primary repo worktree)
+- `gwtcd <branch>` - `cd` into a worktree by branch name (`root` goes to the primary repo worktree; `main` is a normal branch name)
 - `gwtprune` - Prune stale worktree tracking references

@@ -103,7 +103,7 @@ _git-main-worktree () {
 }
 
 # Helper: resolve the current gwtcd target name.
-# Returns the current worktree directory name, or main/master when on the primary worktree.
+# Returns the worktree directory basename, or "root" when on the primary (non-linked) worktree.
 _git-current-wt-target () {
     local repo_root
     repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
@@ -112,7 +112,7 @@ _git-current-wt-target () {
     main_wt=$(_git-main-worktree 2>/dev/null)
 
     if [[ -n "$main_wt" && "$repo_root" == "$main_wt" ]]; then
-        git-main-branch 2>/dev/null
+        print -r -- "root"
     else
         basename "$repo_root"
     fi
@@ -198,13 +198,11 @@ gwtd () {
     fi
 }
 
-# cd into a worktree by branch name
+# cd into a worktree by branch name (use "root" for the primary checkout; branch "main" is a normal name).
 gwtcd () {
     local target_branch="$1"
-    local main_branch
-    main_branch=$(git-main-branch 2>/dev/null) || return 1
 
-    if [[ "$target_branch" == "$main_branch" ]]; then
+    if [[ "$target_branch" == "root" ]]; then
         local main_wt
         main_wt=$(_git-main-worktree) || return 1
         cd "$main_wt" || return 1
@@ -308,16 +306,13 @@ if [[ -n "${ZSH_VERSION-}" ]]; then
         local wt_base
         wt_base=$(_git-wt-base 2>/dev/null) || return 1
 
-        local main_branch
-        main_branch=$(git-main-branch 2>/dev/null)
-
         local current_target
         current_target=$(_git-current-wt-target 2>/dev/null)
-        [[ -z "$current_target" ]] && current_target="$main_branch"
+        [[ -z "$current_target" ]] && current_target="root"
 
         local -a candidates
         candidates=("$wt_base"/*(N:t))
-        [[ -n "$main_branch" ]] && candidates+=("$main_branch")
+        candidates+=("root")
 
         local -a suggestions
         local -A seen

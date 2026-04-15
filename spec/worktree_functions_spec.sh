@@ -205,6 +205,47 @@ Describe 'gwtd (remove worktree and delete branch)'
   End
 End
 
+Describe '_git-current-wt-target'
+  It 'returns root when cwd is the primary worktree'
+    Mock git
+      case "$*" in
+        rev-parse*show-toplevel*)
+          echo '/tmp/main-repo'
+          ;;
+        worktree*list*)
+          printf 'worktree /tmp/main-repo\nbranch refs/heads/main\n'
+          ;;
+        *)
+          exit 1
+          ;;
+      esac
+    End
+
+    When call _git-current-wt-target
+    The output should eq 'root'
+  End
+
+  It 'returns directory basename when cwd is a linked worktree'
+    Mock git
+      case "$*" in
+        rev-parse*show-toplevel*)
+          echo '/tmp/main-repo-worktrees/feature-branch'
+          ;;
+        worktree*list*)
+          printf 'worktree /tmp/main-repo\nbranch refs/heads/main\n'
+          printf 'worktree /tmp/main-repo-worktrees/feature-branch\nbranch refs/heads/feature-branch\n'
+          ;;
+        *)
+          exit 1
+          ;;
+      esac
+    End
+
+    When call _git-current-wt-target
+    The output should eq 'feature-branch'
+  End
+End
+
 Describe 'gwtcd (cd into worktree by branch name)'
   cd() {
     # shellcheck disable=SC2034
@@ -213,12 +254,26 @@ Describe 'gwtcd (cd into worktree by branch name)'
     return 0
   }
 
-  It 'changes to main worktree when branch is main'
+  It 'changes to primary worktree when target is root'
     Mock git
       case "$*" in
-        symbolic-ref*)
-          echo 'refs/remotes/origin/main'
+        worktree*list*)
+          printf 'worktree /tmp/main-repo\nbranch refs/heads/main\n'
           ;;
+        *)
+          exit 1
+          ;;
+      esac
+    End
+
+    When call gwtcd "root"
+    The status should be success
+    The variable GWTCD_CD_PATH should eq "/tmp/main-repo"
+  End
+
+  It 'changes to worktree directory for branch main like any other branch name'
+    Mock git
+      case "$*" in
         worktree*list*)
           printf 'worktree /tmp/main-repo\nbranch refs/heads/main\n'
           ;;
@@ -230,15 +285,12 @@ Describe 'gwtcd (cd into worktree by branch name)'
 
     When call gwtcd "main"
     The status should be success
-    The variable GWTCD_CD_PATH should eq "/tmp/main-repo"
+    The variable GWTCD_CD_PATH should eq "/tmp/main-repo-worktrees/main"
   End
 
-  It 'changes to worktree directory when branch is not main'
+  It 'changes to worktree directory when branch is not root'
     Mock git
       case "$*" in
-        symbolic-ref*)
-          echo 'refs/remotes/origin/main'
-          ;;
         worktree*list*)
           printf 'worktree /tmp/main-repo\nbranch refs/heads/main\n'
           ;;
