@@ -37,6 +37,13 @@ Describe '_git-wt-base'
   End
 End
 
+Describe '_git-wt-base-from-main'
+  It 'returns the plugin worktrees base for a main worktree path'
+    When call _git-wt-base-from-main '/tmp/foo/my-repo'
+    The output should eq '/tmp/foo/my-repo-worktrees'
+  End
+End
+
 Describe 'gwta (add worktree with new branch from main)'
   Mock git
     case "$1" in
@@ -307,13 +314,110 @@ Describe 'gwtcd (cd into worktree by branch name)'
 End
 
 Describe 'gwtprune'
+  # Set GWTPRUNE_REV_PARSE and GWTPRUNE_SECOND_WT in each example.
   Mock git
-    printf '%s\n' "git $*"
-    return 0
+    _gwtprune_common_git_mock() {
+      case "$1" in
+        fetch)
+          printf '%s\n' "git $*"
+          return 0
+          ;;
+        symbolic-ref)
+          echo 'refs/remotes/origin/main'
+          return 0
+          ;;
+        rev-parse)
+          echo "${GWTPRUNE_REV_PARSE:?GWTPRUNE_REV_PARSE must be set}"
+          return 0
+          ;;
+        branch)
+          if [ "${2:-}" = "-vv" ]; then
+            printf '  main    abc123 [origin/main] commit msg\n'
+            printf '  gone    def456 [origin/gone: gone] old msg\n'
+            return 0
+          fi
+          if [ "${2:-}" = "--merged" ]; then
+            printf '  main    abc123\n'
+            printf '  gone    def456\n'
+            return 0
+          fi
+          printf '%s\n' "git $*"
+          return 0
+          ;;
+        for-each-ref)
+          printf 'main\n'
+          printf 'gone\n'
+          return 0
+          ;;
+        diff)
+          return 1
+          ;;
+        worktree)
+          case "$*" in
+            *list*--porcelain*)
+              printf 'worktree /tmp/main-repo\n'
+              printf 'HEAD 1111111111111111111111111111111111111111\n'
+              printf 'branch refs/heads/main\n'
+              printf '\n'
+              printf 'worktree %s\n' "${GWTPRUNE_SECOND_WT:?GWTPRUNE_SECOND_WT must be set}"
+              printf 'HEAD 2222222222222222222222222222222222222222\n'
+              printf 'branch refs/heads/gone\n'
+              printf '\n'
+              return 0
+              ;;
+            remove*)
+              printf '%s\n' "git $*"
+              return 0
+              ;;
+            prune*)
+              printf '%s\n' "git $*"
+              return 0
+              ;;
+            *)
+              printf '%s\n' "git $*"
+              return 0
+              ;;
+          esac
+          ;;
+        *)
+          printf '%s\n' "git $*"
+          return 0
+          ;;
+      esac
+    }
+    _gwtprune_common_git_mock "$@"
   End
 
-  It 'prunes stale worktree references'
+  It 'removes plugin-layout worktrees when the branch is stale and matches the path'
+    GWTPRUNE_REV_PARSE=/tmp/main-repo
+    GWTPRUNE_SECOND_WT=/tmp/main-repo-worktrees/gone
+    export GWTPRUNE_REV_PARSE GWTPRUNE_SECOND_WT
+
     When call gwtprune
-    The output should eq 'git worktree prune -v'
+    The output should include 'git fetch --prune'
+    The output should include 'git worktree remove /tmp/main-repo-worktrees/gone'
+    The output should include 'git branch -D gone'
+    The output should include 'git worktree prune -v'
+  End
+
+  It 'does not remove when directory name does not match checked-out branch'
+    GWTPRUNE_REV_PARSE=/tmp/main-repo
+    GWTPRUNE_SECOND_WT=/tmp/main-repo-worktrees/foo-dir
+    export GWTPRUNE_REV_PARSE GWTPRUNE_SECOND_WT
+
+    When call gwtprune
+    The output should not include 'git worktree remove'
+    The output should include 'git worktree prune -v'
+  End
+
+  It 'skips removal when cwd is the matching stale worktree'
+    GWTPRUNE_REV_PARSE=/tmp/main-repo-worktrees/gone
+    GWTPRUNE_SECOND_WT=/tmp/main-repo-worktrees/gone
+    export GWTPRUNE_REV_PARSE GWTPRUNE_SECOND_WT
+
+    When call gwtprune
+    The stderr should include 'gwtprune: skipping /tmp/main-repo-worktrees/gone (current directory)'
+    The output should not include 'git worktree remove'
+    The output should include 'git worktree prune -v'
   End
 End

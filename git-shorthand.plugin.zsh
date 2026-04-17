@@ -102,6 +102,13 @@ _git-main-worktree () {
     git worktree list --porcelain | sed -n 's/^worktree //p' | head -1
 }
 
+# Helper: plugin worktrees base directory for a given main worktree path.
+_git-wt-base-from-main () {
+    local main_wt="$1"
+    [[ -n "$main_wt" ]] || return 1
+    print -r -- "$(dirname "$main_wt")/$(basename "$main_wt")-worktrees"
+}
+
 # Helper: resolve the current gwtcd target name.
 # Returns the worktree directory basename, or "root" when on the primary (non-linked) worktree.
 _git-current-wt-target () {
@@ -124,7 +131,7 @@ _git-wt-base () {
     local main_wt
     main_wt=$(_git-main-worktree)
     [[ -n "$main_wt" ]] || return 1
-    echo "$(dirname "$main_wt")/$(basename "$main_wt")-worktrees"
+    _git-wt-base-from-main "$main_wt"
 }
 
 # Add worktree with a new branch from main
@@ -213,8 +220,162 @@ gwtcd () {
     fi
 }
 
-# Prune stale worktree tracking references
+# List local branch names stale relative to origin's main branch: upstream gone, merged into
+# main, or identical tree to main. Always omits the main branch itself. If $1 is set, that
+# branch name is omitted (gbprune passes the current HEAD so it is not deleted in place).
+_git-stale-local-branches () {
+    local exclude_branch="${1-}"
+
+    local main_branch main_ref
+    main_branch=$(git-main-branch)
+    main_ref="origin/$main_branch"
+
+    local -a to_delete
+    local branch
+
+    # 1. Branches whose upstream remote-tracking ref is gone
+    while read -r branch; do
+        [[ -z "$branch" ]] && continue
+        [[ -n "$exclude_branch" && "$branch" == "$exclude_branch" ]] && continue
+        [[ "$branch" == "$main_branch" ]] && continue
+        to_delete+=("$branch")
+    done < <(git branch -vv 2>/dev/null | grep ': gone]' | sed 's/^\*//' | awk '{print $1}')
+
+    # 2. Branches whose commits are ancestors of main (regular merge, rebase)
+    while read -r branch; do
+        [[ -z "$branch" ]] && continue
+        [[ -n "$exclude_branch" && "$branch" == "$exclude_branch" ]] && continue
+        [[ "$branch" == "$main_branch" ]] && continue
+        to_delete+=("$branch")
+    done < <(git branch --merged "$main_ref" 2>/dev/null | sed 's/^\*//' | awk '{print $1}')
+
+    # 3. Branches with identical tree to main (squash merge, etc.)
+    for branch in $(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null); do
+        [[ -n "$exclude_branch" && "$branch" == "$exclude_branch" ]] && continue
+        [[ "$branch" == "$main_branch" ]] && continue
+        if git diff --quiet "$main_ref" "$branch" 2>/dev/null; then
+            to_delete+=("$branch")
+        fi
+    done
+
+    for branch in "${(u)to_delete[@]}"; do
+        [[ -n "$branch" ]] && print -r -- "$branch"
+    done
+}
+
+# Prune local branches that have been fully merged into main (by any method).
+# Handles: upstream gone, regular merge, squash merge, rebase merge.
+gbprune () {
+    git fetch --prune
+
+    local current branch
+    current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
+
+    for branch in "${(@f)$(_git-stale-local-branches "$current")}"; do
+        [[ -z "$branch" ]] && continue
+        git branch -D "$branch"
+    done
+}
+
+# Pull current branch, then prune local branches fully merged into main (see gbprune).
+gpbprune () {
+    git pull && gbprune
+}
+
+# Remove linked worktrees under the plugin layout ({repo}-worktrees/<branch>) when the path
+# matches the checked-out branch and that branch is stale (same rules as gbprune). Skips the
+# primary worktree, detached HEAD, mismatched path/branch, and the worktree you are in. Finishes
+# with git worktree prune for leftover administrative cruft.
 gwtprune () {
+    git fetch --prune
+
+    local porcelain main_wt wt_base repo_root
+    # One `git worktree list --porcelain` for main path, wt_base, and parsing (not separate calls).
+    porcelain=$(git worktree list --porcelain) || return 1
+    main_wt=$(print -r -- "$porcelain" | sed -n 's/^worktree //p' | head -1)
+    [[ -n "$main_wt" ]] || return 1
+    wt_base=$(_git-wt-base-from-main "$main_wt") || return 1
+
+    repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+
+    local -A stale_map
+    local b
+    for b in "${(@f)$(_git-stale-local-branches)}"; do
+        [[ -n "$b" ]] && stale_map[$b]=1
+    done
+
+    local wt_path="" wt_branch="" saw_detached=0
+
+    flush_wt_record () {
+        if [[ -z "$wt_path" ]]; then
+            wt_branch="" saw_detached=0
+            return 0
+        fi
+
+        if (( saw_detached )) || [[ -z "$wt_branch" ]]; then
+            wt_path="" wt_branch="" saw_detached=0
+            return 0
+        fi
+
+        if [[ "$wt_path" == "$main_wt" ]]; then
+            wt_path="" wt_branch="" saw_detached=0
+            return 0
+        fi
+
+        local rel="${wt_path#"$wt_base"/}"
+        if [[ "$wt_path" != "$wt_base/$rel" ]] || [[ "$rel" != "$wt_branch" ]]; then
+            wt_path="" wt_branch="" saw_detached=0
+            return 0
+        fi
+
+        if [[ -z "${stale_map[$wt_branch]-}" ]]; then
+            wt_path="" wt_branch="" saw_detached=0
+            return 0
+        fi
+
+        if [[ "$wt_path" == "$repo_root" ]]; then
+            print -r -- "gwtprune: skipping $wt_path (current directory)" >&2
+            wt_path="" wt_branch="" saw_detached=0
+            return 0
+        fi
+
+        if git worktree remove "$wt_path"; then
+            git branch -D "$wt_branch"
+        else
+            print -r -- "gwtprune: worktree remove failed for $wt_path" >&2
+        fi
+
+        wt_path="" wt_branch="" saw_detached=0
+    }
+
+    local line ref
+    while IFS= read -r line; do
+        if [[ -z "$line" ]]; then
+            flush_wt_record
+            continue
+        fi
+
+        case "$line" in
+            worktree\ *)
+                flush_wt_record
+                wt_path="${line#worktree }"
+                wt_branch="" saw_detached=0
+                ;;
+            detached)
+                saw_detached=1
+                ;;
+            branch\ *)
+                ref="${line#branch }"
+                wt_branch="${ref#refs/heads/}"
+                if [[ "$wt_branch" == "$ref" ]]; then
+                    wt_branch=""
+                fi
+                ;;
+        esac
+    done < <(print -r -- "$porcelain")
+
+    flush_wt_record
+
     git worktree prune -v
 }
 
@@ -225,58 +386,6 @@ alias gpm="git pull origin \$(git-main-branch)"
 gprm () {
     git fetch origin "$(git-main-branch):$(git-main-branch)"
     git rebase "$(git-main-branch)"
-}
-
-# Prune local branches that have been fully merged into main (by any method).
-# Handles: upstream gone, regular merge, squash merge, rebase merge.
-gbprune () {
-    git fetch --prune
-
-    local main_branch main_ref
-    main_branch=$(git-main-branch)
-    main_ref="origin/$main_branch"
-
-    local current
-    current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
-
-    local -a to_delete
-    local branch
-
-    # 1. Branches whose upstream remote-tracking ref is gone
-    while read -r branch; do
-        [[ -z "$branch" ]] && continue
-        [[ "$branch" == "$current" ]] && continue
-        [[ "$branch" == "$main_branch" ]] && continue
-        to_delete+=("$branch")
-    done < <(git branch -vv 2>/dev/null | grep ': gone]' | sed 's/^\*//' | awk '{print $1}')
-
-    # 2. Branches whose commits are ancestors of main (regular merge, rebase)
-    while read -r branch; do
-        [[ -z "$branch" ]] && continue
-        [[ "$branch" == "$current" ]] && continue
-        [[ "$branch" == "$main_branch" ]] && continue
-        to_delete+=("$branch")
-    done < <(git branch --merged "$main_ref" 2>/dev/null | sed 's/^\*//' | awk '{print $1}')
-
-    # 3. Branches with identical tree to main (squash merge, etc.)
-    for branch in $(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null); do
-        [[ "$branch" == "$current" ]] && continue
-        [[ "$branch" == "$main_branch" ]] && continue
-        if git diff --quiet "$main_ref" "$branch" 2>/dev/null; then
-            to_delete+=("$branch")
-        fi
-    done
-
-    # Dedupe and delete
-    for branch in "${(u)to_delete[@]}"; do
-        [[ -z "$branch" ]] && continue
-        git branch -D "$branch"
-    done
-}
-
-# Pull current branch, then prune local branches fully merged into main (see gbprune).
-gpbprune () {
-    git pull && gbprune
 }
 
 # Zsh completion support for shorthand aliases and functions.
