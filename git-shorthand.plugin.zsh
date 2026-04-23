@@ -164,47 +164,6 @@ gwtl () {
     git worktree list
 }
 
-# Remove worktree and delete branch.
-# Pass --force to force-remove worktree (including submodules/dirty) and force-delete branch.
-# Without --force: tries remove first; retries with --force only when worktree has submodules
-# and is clean (no uncommitted changes). Dirty worktrees always fail unless --force is used.
-gwtd () {
-    local wt_base
-    wt_base=$(_git-wt-base)
-    local branch branch_force
-    if [[ "$1" == "--force" ]]; then
-        branch="$2"
-        branch_force=1
-    else
-        branch="$1"
-        branch_force=0
-    fi
-    local wt_path="$wt_base/$branch"
-    if (( branch_force )); then
-        git worktree remove --force "$wt_path" || return 1
-    else
-        local err
-        if ! err=$(git worktree remove "$wt_path" 2>&1); then
-            if [[ "$err" == *"submodules"* ]]; then
-                # Submodule error: only use --force if worktree is clean (no uncommitted changes).
-                if [[ -n "$(git -C "$wt_path" status --porcelain 2>/dev/null)" ]]; then
-                    echo "fatal: worktree has submodules and uncommitted changes; commit or stash first, or use gwtd --force" >&2
-                    return 1
-                fi
-                git worktree remove --force "$wt_path" || return 1
-            else
-                echo "$err" >&2
-                return 1
-            fi
-        fi
-    fi
-    if (( branch_force )); then
-        git branch -D "$branch"
-    else
-        git branch -d "$branch"
-    fi
-}
-
 # cd into a worktree by branch name (use "root" for the primary checkout; branch "main" is a normal name).
 gwtcd () {
     local target_branch="$1"
@@ -261,6 +220,122 @@ _git-stale-local-branches () {
     for branch in "${(u)to_delete[@]}"; do
         [[ -n "$branch" ]] && print -r -- "$branch"
     done
+}
+
+# Helper: returns success when a branch matches the same stale rules as gbprune.
+_git-local-branch-is-stale () {
+    local target_branch="$1"
+    local stale_branch
+
+    for stale_branch in "${(@f)$(_git-stale-local-branches)}"; do
+        [[ -z "$stale_branch" ]] && continue
+        [[ "$stale_branch" == "$target_branch" ]] && return 0
+    done
+
+    return 1
+}
+
+# Helper: returns success when the branch has an upstream containing all local commits.
+_git-local-branch-is-fully-upstreamed () {
+    local branch="$1"
+    local upstream
+    upstream=$(git rev-parse --abbrev-ref "$branch@{upstream}" 2>/dev/null) || return 1
+
+    git merge-base --is-ancestor "$branch" "$upstream" 2>/dev/null
+}
+
+# Helper: returns success when the branch's configured upstream has been pruned away.
+_git-local-branch-has-gone-upstream () {
+    local target_branch="$1"
+    local gone_branch
+
+    for gone_branch in "${(@f)$(git branch -vv 2>/dev/null | grep ': gone]' | sed 's/^\*//' | awk '{print $1}')}"; do
+        [[ -z "$gone_branch" ]] && continue
+        [[ "$gone_branch" == "$target_branch" ]] && return 0
+    done
+
+    return 1
+}
+
+# Helper: remove a plugin-managed worktree directory and prune Git's stale metadata.
+_git-remove-worktree-directory () {
+    local wt_path="$1"
+    local wt_base="$2"
+
+    if [[ -z "$wt_path" || -z "$wt_base" || "$wt_path" == "$wt_base" || "$wt_path" != "$wt_base"/* ]]; then
+        print -r -- "gwtd: refusing to remove unsafe worktree path: $wt_path" >&2
+        return 1
+    fi
+
+    rm -rf -- "$wt_path" || return 1
+    git worktree prune -v
+}
+
+# Remove a worktree checkout without deleting its branch.
+# Without --force, the worktree must be clean and the branch must be safely stale.
+gwtd () {
+    local branch branch_force
+    if [[ "$1" == "--force" ]]; then
+        branch="$2"
+        branch_force=1
+    else
+        branch="$1"
+        branch_force=0
+    fi
+
+    if [[ -z "$branch" ]]; then
+        print -r -- "usage: gwtd [--force] <branch>" >&2
+        return 2
+    fi
+
+    if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
+        print -r -- "gwtd: invalid branch name: $branch" >&2
+        return 1
+    fi
+
+    local wt_base
+    wt_base=$(_git-wt-base) || return 1
+
+    local wt_path="$wt_base/$branch"
+    if [[ ! -d "$wt_path" ]]; then
+        print -r -- "gwtd: worktree not found: $wt_path" >&2
+        return 1
+    fi
+
+    local repo_root
+    repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+    if [[ "$repo_root" == "$wt_path" ]]; then
+        print -r -- "gwtd: refusing to remove the current worktree; cd elsewhere first" >&2
+        return 1
+    fi
+
+    local wt_branch
+    wt_branch=$(git -C "$wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null) || return 1
+    if [[ "$wt_branch" != "$branch" ]]; then
+        print -r -- "gwtd: $wt_path is checked out as $wt_branch, not $branch" >&2
+        return 1
+    fi
+
+    if (( ! branch_force )); then
+        if [[ -n "$(git -C "$wt_path" status --porcelain 2>/dev/null)" ]]; then
+            print -r -- "gwtd: worktree has uncommitted changes; commit or stash first, or use gwtd --force" >&2
+            return 1
+        fi
+
+        git fetch --prune || return 1
+
+        if ! _git-local-branch-is-fully-upstreamed "$branch" && ! _git-local-branch-has-gone-upstream "$branch"; then
+            print -r -- "gwtd: branch is not fully upstreamed; push first, or use gwtd --force" >&2
+            return 1
+        fi
+
+        if ! _git-local-branch-is-stale "$branch"; then
+            print -r -- "gwtd: branch is not stale relative to origin/$(git-main-branch); merge it first, or use gwtd --force" >&2
+            return 1
+        fi
+    fi
+
+    _git-remove-worktree-directory "$wt_path" "$wt_base"
 }
 
 # Prune local branches that have been fully merged into main (by any method).
@@ -453,7 +528,7 @@ if [[ -n "${ZSH_VERSION-}" ]]; then
     _git_shorthand_gwtd () {
         if (( CURRENT == 2 )); then
             _arguments \
-                '--force[force-remove worktree and delete branch]' \
+                '--force[remove worktree without safety checks]' \
                 '1:branch:_git_shorthand_local_branches'
         elif (( CURRENT == 3 )) && [[ "${words[2]}" == "--force" ]]; then
             _git_shorthand_local_branches

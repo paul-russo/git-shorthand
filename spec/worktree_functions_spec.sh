@@ -107,108 +107,198 @@ Describe 'gwtl (list worktrees)'
   End
 End
 
-Describe 'gwtd (remove worktree and delete branch)'
+Describe 'gwtd (remove worktree while preserving branch)'
   git() {
     case "$1" in
+      check-ref-format)
+        return 0
+        ;;
+      fetch)
+        printf '%s\n' "git $*"
+        return 0
+        ;;
       worktree)
         if [ "${2:-}" = "list" ]; then
           printf 'worktree /tmp/repo\n'
-        elif [ "${2:-}" = "remove" ]; then
-          printf 'git worktree remove %s\n' "${3:-}"
           return 0
         fi
-        printf 'git %s\n' "$*"
+        if [ "${2:-}" = "prune" ]; then
+          printf '%s\n' "git $*"
+          return 0
+        fi
+        return 0
+        ;;
+      rev-parse)
+        if [ "${2:-}" = "--show-toplevel" ]; then
+          printf '/tmp/repo\n'
+          return 0
+        fi
+        if [ "${2:-}" = "--abbrev-ref" ]; then
+          if [ "${GWTD_HAS_UPSTREAM:-1}" = "0" ]; then
+            return 1
+          fi
+          printf 'origin/%s\n' "${3%%@*}"
+          return 0
+        fi
+        return 0
+        ;;
+      -C)
+        if [ "${3:-}" = "rev-parse" ]; then
+          printf '%s\n' "${GWTD_ACTUAL_BRANCH:-${2##*/}}"
+          return 0
+        fi
+        if [ "${3:-}" = "status" ]; then
+          printf '%s\n' "${GWTD_STATUS_OUTPUT:-}"
+          return 0
+        fi
+        return 0
+        ;;
+      merge-base)
+        return "${GWTD_MERGE_BASE_STATUS:-0}"
+        ;;
+      symbolic-ref)
+        printf 'refs/remotes/origin/main\n'
         return 0
         ;;
       branch)
-        printf 'git %s\n' "$*"
+        if [ "${2:-}" = "-vv" ]; then
+          printf '  merged   abc123 [origin/merged] msg\n'
+          printf '  dirty    abc123 [origin/dirty] msg\n'
+          printf '  unpushed abc123 [origin/unpushed] msg\n'
+          printf '  fresh    abc123 [origin/fresh] msg\n'
+          printf '  gone     abc123 [origin/gone: gone] msg\n'
+          printf '  local    abc123 msg\n'
+          return 0
+        fi
+        if [ "${2:-}" = "--merged" ]; then
+          if [ "${GWTD_IS_STALE:-1}" = "1" ]; then
+            printf '  merged\n'
+            printf '  dirty\n'
+            printf '  unpushed\n'
+            printf '  gone\n'
+            printf '  local\n'
+          fi
+          return 0
+        fi
+        printf '%s\n' "git $*"
         return 0
         ;;
-      symbolic-ref)
-        echo 'refs/remotes/origin/main'
+      for-each-ref)
+        printf 'main\n'
+        printf 'merged\n'
+        printf 'dirty\n'
+        printf 'unpushed\n'
+        printf 'fresh\n'
+        printf 'gone\n'
+        printf 'local\n'
+        return 0
+        ;;
+      diff)
+        return 1
         ;;
       *)
-        printf 'git %s\n' "$*"
+        printf '%s\n' "git $*"
         return 0
         ;;
     esac
   }
 
-  It 'removes worktree and deletes branch with -d'
-    When call gwtd "test-branch"
-    The output should include 'branch -d test-branch'
+  rm() {
+    printf '%s\n' "rm $*"
+    return 0
+  }
+
+  mkdir -p /tmp/repo-worktrees/merged /tmp/repo-worktrees/dirty /tmp/repo-worktrees/unpushed /tmp/repo-worktrees/fresh /tmp/repo-worktrees/gone /tmp/repo-worktrees/local 2>/dev/null || true
+
+  It 'removes a clean stale worktree and preserves the branch'
+    GWTD_STATUS_OUTPUT=''
+    GWTD_MERGE_BASE_STATUS=0
+    GWTD_HAS_UPSTREAM=1
+    GWTD_IS_STALE=1
+
+    When call gwtd "merged"
+    The output should include 'git fetch --prune'
+    The output should include 'rm -rf -- /tmp/repo-worktrees/merged'
+    The output should include 'git worktree prune -v'
+    The output should not include 'branch -d merged'
+    The output should not include 'branch -D merged'
     The status should be success
   End
 
   Context 'with --force'
-    It 'removes worktree with --force and deletes branch with -D'
-      When call gwtd --force "test-branch"
-      The output should include 'branch -D test-branch'
+    It 'removes the worktree without safety checks and preserves the branch'
+      GWTD_STATUS_OUTPUT=' M file.txt'
+      GWTD_MERGE_BASE_STATUS=1
+      GWTD_HAS_UPSTREAM=1
+      GWTD_IS_STALE=0
+
+      When call gwtd --force "dirty"
+      The output should include 'rm -rf -- /tmp/repo-worktrees/dirty'
+      The output should include 'git worktree prune -v'
+      The output should not include 'git fetch --prune'
+      The output should not include 'branch -D dirty'
       The status should be success
     End
   End
 
-  Context 'when worktree has submodules and uncommitted changes'
-    git() {
-      case "$1" in
-        worktree)
-          if [ "${2:-}" = "list" ]; then
-            printf 'worktree /tmp/repo\n'
-          elif [ "${2:-}" = "remove" ]; then
-            echo 'fatal: worktree has submodules' >&2
-            return 1
-          fi
-          printf 'git %s\n' "$*"
-          return 0
-          ;;
-        branch)
-          printf 'git %s\n' "$*"
-          return 0
-          ;;
-        symbolic-ref)
-          echo 'refs/remotes/origin/main'
-          ;;
-        *)
-          printf 'git %s\n' "$*"
-          return 0
-          ;;
-      esac
-    }
-    # Simulate uncommitted changes (status --porcelain returns something)
-    Mock mkdir
-      return 0
-    End
+  It 'rejects dirty worktrees without --force'
+    GWTD_STATUS_OUTPUT=' M file.txt'
+    GWTD_MERGE_BASE_STATUS=0
+    GWTD_HAS_UPSTREAM=1
+    GWTD_IS_STALE=1
 
-    BeforeRun 'mkdir -p /tmp/repo-worktrees/dirty-wt 2>/dev/null || true'
+    When call gwtd "dirty"
+    The stderr should include 'uncommitted changes'
+    The output should not include 'rm -rf'
+    The status should be failure
+  End
 
-    It 'fails with helpful message when worktree has submodules and uncommitted changes'
-      # Override git to return submodule error and simulate dirty worktree
-      git() {
-        case "$1" in
-          worktree)
-            if [ "${2:-}" = "list" ]; then
-              printf 'worktree /tmp/repo\n'
-            elif [ "${2:-}" = "remove" ]; then
-              echo 'fatal: worktree has submodules' >&2
-              return 1
-            fi
-            return 0
-            ;;
-          -*|*)
-            # git -C ... status --porcelain (simulate dirty)
-            if [ "$1" = "-C" ] && [ "${4:-}" = "--porcelain" ]; then
-              echo " M file.txt"
-              return 0
-            fi
-            return 0
-            ;;
-        esac
-      }
-      When call gwtd "dirty-wt"
-      The stderr should include 'submodules'
-      The stderr should include 'uncommitted changes'
-      The status should be failure
-    End
+  It 'rejects branches with commits missing from upstream without --force'
+    GWTD_STATUS_OUTPUT=''
+    GWTD_MERGE_BASE_STATUS=1
+    GWTD_HAS_UPSTREAM=1
+    GWTD_IS_STALE=1
+
+    When call gwtd "unpushed"
+    The stderr should include 'not fully upstreamed'
+    The output should not include 'rm -rf'
+    The status should be failure
+  End
+
+  It 'rejects local branches without an upstream even when their tree is stale'
+    GWTD_STATUS_OUTPUT=''
+    GWTD_MERGE_BASE_STATUS=0
+    GWTD_HAS_UPSTREAM=0
+    GWTD_IS_STALE=1
+
+    When call gwtd "local"
+    The stderr should include 'not fully upstreamed'
+    The output should not include 'rm -rf'
+    The status should be failure
+  End
+
+  It 'allows gone-upstream branches when they are stale by gbprune rules'
+    GWTD_STATUS_OUTPUT=''
+    GWTD_MERGE_BASE_STATUS=1
+    GWTD_HAS_UPSTREAM=0
+    GWTD_IS_STALE=1
+
+    When call gwtd "gone"
+    The output should include 'rm -rf -- /tmp/repo-worktrees/gone'
+    The output should include 'git worktree prune -v'
+    The status should be success
+  End
+
+  It 'rejects branches that are not stale by gbprune rules without --force'
+    GWTD_STATUS_OUTPUT=''
+    GWTD_MERGE_BASE_STATUS=0
+    GWTD_HAS_UPSTREAM=1
+    GWTD_IS_STALE=0
+
+    When call gwtd "fresh"
+    The stderr should include 'not stale'
+    The output should not include 'rm -rf'
+    The status should be failure
   End
 End
 

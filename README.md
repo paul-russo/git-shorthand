@@ -67,13 +67,13 @@ These commands work with either `master` or `main` branches automatically:
 If you use linked worktrees under `{repo_name}-worktrees/`, run `gwtprune` before `gbprune` when cleaning up stale branches. Git will not delete a branch that is still checked out in another worktree until that checkout is removed.
 
 ## Worktree Operations
-Worktrees are stored in a `{repo_name}-worktrees/` sibling directory to keep your workspace clean. Worktrees and branches share a 1-to-1 lifecycle — when you remove a worktree, the branch is deleted with it.
+Worktrees are stored in a `{repo_name}-worktrees/` sibling directory to keep your workspace clean. Worktree creation still creates or checks out a branch for that checkout, but `gwtd` removes only the worktree and leaves the branch in place.
 
 - `gwta <branch>` - Add worktree with a new branch from main
 - `gfmwta <branch>` - Fetch main, then add worktree with a new branch from it
 - `gwtco <branch>` - Add worktree for an existing branch (e.g. a remote branch)
 - `gwtl` - List all worktrees
-- `gwtd <branch>` - Remove worktree and delete branch (warns if unmerged)
-- `gwtd --force <branch>` - Force-remove worktree and force-delete branch
+- `gwtd <branch>` - Remove a clean worktree while preserving its branch; rejects if the branch has uncommitted changes, has no upstream or commits missing from its upstream, or is not stale by the same rules as `gbprune`
+- `gwtd --force <branch>` - Remove a worktree while preserving its branch, skipping dirty/upstream/stale safety checks
 - `gwtcd <branch>` - `cd` into a worktree by branch name (`root` goes to the primary repo worktree; `main` is a normal branch name)
 - `gwtprune` - Fetch with prune; remove `{repo}-worktrees/<branch>` checkouts whose relative path matches the checked-out branch and that branch is stale (same detection as `gbprune`); then `git worktree prune -v`. Skips the primary worktree, non-plugin paths, detached HEAD, branch/path mismatches, and the worktree you are currently in. If remove fails (for example dirty tree or submodules), use `gwtd --force <branch>` for that checkout.
