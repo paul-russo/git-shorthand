@@ -73,6 +73,13 @@ Describe 'gwta (add worktree with new branch from main)'
 End
 
 Describe 'gwtco (add worktree for existing branch)'
+  cd() {
+    # shellcheck disable=SC2034
+    # Set in mock cd; asserted by shellspec "The variable GWTCO_CD_PATH"
+    GWTCO_CD_PATH="$1"
+    return 0
+  }
+
   Mock git
     case "$*" in
       *worktree*list*)
@@ -89,9 +96,19 @@ Describe 'gwtco (add worktree for existing branch)'
   End
 
   It 'adds worktree for existing branch'
+    rm -rf /tmp/repo-worktrees/existing-branch 2>/dev/null || true
+
     When call gwtco "existing-branch"
     The output should include 'worktree add'
     The output should include 'existing-branch'
+  End
+
+  It 'changes to an existing worktree instead of adding it again'
+    mkdir -p /tmp/repo-worktrees/existing-branch 2>/dev/null || true
+
+    When call gwtco "existing-branch"
+    The output should not include 'worktree add'
+    The variable GWTCO_CD_PATH should eq "/tmp/repo-worktrees/existing-branch"
   End
 End
 

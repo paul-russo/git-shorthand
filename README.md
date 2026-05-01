@@ -71,7 +71,7 @@ Worktrees are stored in a `{repo_name}-worktrees/` sibling directory to keep you
 
 - `gwta <branch>` - Add worktree with a new branch from main
 - `gfmwta <branch>` - Fetch main, then add worktree with a new branch from it
-- `gwtco <branch>` - Add worktree for an existing branch (e.g. a remote branch)
+- `gwtco <branch>` - Add worktree for an existing branch (e.g. a remote branch); if the worktree already exists, `cd` into it
 - `gwtl` - List all worktrees
 - `gwtd <branch>` - Remove a clean worktree while preserving its branch; rejects if the branch has uncommitted changes, has no upstream or commits missing from its upstream, or is not stale by the same rules as `gbprune`
 - `gwtd --force <branch>` - Remove a worktree while preserving its branch, skipping dirty/upstream/stale safety checks

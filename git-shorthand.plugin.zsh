@@ -155,8 +155,15 @@ gfmwta () {
 gwtco () {
     local wt_base
     wt_base=$(_git-wt-base)
+    local wt_path="$wt_base/$1"
+
+    if [[ -d "$wt_path" ]]; then
+        cd "$wt_path" || return 1
+        return 0
+    fi
+
     mkdir -p "$wt_base"
-    git worktree add "$wt_base/$1" "$1"
+    git worktree add "$wt_path" "$1"
 }
 
 # List worktrees
