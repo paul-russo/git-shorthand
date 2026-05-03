@@ -146,6 +146,17 @@ Describe 'gwtd (remove worktree while preserving branch)'
         return 0
         ;;
       rev-parse)
+        if [ "${2:-}" = "--verify" ]; then
+          case "${3:-}" in
+            refs/heads/squashed)
+              printf '%s\n' "${GWTD_SQUASHED_OID:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}"
+              return 0
+              ;;
+            *)
+              return 1
+              ;;
+          esac
+        fi
         if [ "${2:-}" = "--show-toplevel" ]; then
           printf '/tmp/repo\n'
           return 0
@@ -208,6 +219,7 @@ Describe 'gwtd (remove worktree while preserving branch)'
         printf 'fresh\n'
         printf 'gone\n'
         printf 'local\n'
+        printf 'squashed\n'
         return 0
         ;;
       diff)
@@ -219,6 +231,18 @@ Describe 'gwtd (remove worktree while preserving branch)'
         ;;
     esac
   }
+
+  Mock gh
+    case "$*" in
+      pr\ list*--head\ squashed*)
+        printf '%s\n' "${GWTD_GH_HEAD_OIDS:-}"
+        return 0
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  End
 
   rm() {
     printf '%s\n' "rm $*"
@@ -434,6 +458,17 @@ Describe 'gwtprune'
           return 0
           ;;
         rev-parse)
+          if [ "${2:-}" = "--verify" ]; then
+            case "${3:-}" in
+              refs/heads/squashed)
+                printf '%s\n' "${GWTPRUNE_SQUASHED_OID:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}"
+                return 0
+                ;;
+              *)
+                return 1
+                ;;
+            esac
+          fi
           echo "${GWTPRUNE_REV_PARSE:?GWTPRUNE_REV_PARSE must be set}"
           return 0
           ;;
@@ -454,6 +489,7 @@ Describe 'gwtprune'
         for-each-ref)
           printf 'main\n'
           printf 'gone\n'
+          printf 'squashed\n'
           return 0
           ;;
         diff)
@@ -468,7 +504,7 @@ Describe 'gwtprune'
               printf '\n'
               printf 'worktree %s\n' "${GWTPRUNE_SECOND_WT:?GWTPRUNE_SECOND_WT must be set}"
               printf 'HEAD 2222222222222222222222222222222222222222\n'
-              printf 'branch refs/heads/gone\n'
+              printf 'branch refs/heads/%s\n' "${GWTPRUNE_SECOND_BRANCH:-gone}"
               printf '\n'
               return 0
               ;;
@@ -495,10 +531,25 @@ Describe 'gwtprune'
     _gwtprune_common_git_mock "$@"
   End
 
+  Mock gh
+    case "$*" in
+      pr\ list*--head\ squashed*)
+        printf '%s\n' "${GWTPRUNE_GH_HEAD_OIDS:-}"
+        return 0
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  End
+
   It 'removes plugin-layout worktrees when the branch is stale and matches the path'
     GWTPRUNE_REV_PARSE=/tmp/main-repo
     GWTPRUNE_SECOND_WT=/tmp/main-repo-worktrees/gone
-    export GWTPRUNE_REV_PARSE GWTPRUNE_SECOND_WT
+    GWTPRUNE_SECOND_BRANCH=gone
+    GWTPRUNE_GH_HEAD_OIDS=''
+    export GWTPRUNE_REV_PARSE GWTPRUNE_SECOND_WT GWTPRUNE_SECOND_BRANCH
+    export GWTPRUNE_GH_HEAD_OIDS
 
     When call gwtprune
     The output should include 'git fetch --prune'
@@ -507,10 +558,28 @@ Describe 'gwtprune'
     The output should include 'git worktree prune -v'
   End
 
+  It 'removes plugin-layout worktrees when the branch was squash-merged on GitHub'
+    GWTPRUNE_REV_PARSE=/tmp/main-repo
+    GWTPRUNE_SECOND_WT=/tmp/main-repo-worktrees/squashed
+    GWTPRUNE_SECOND_BRANCH=squashed
+    GWTPRUNE_SQUASHED_OID='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    GWTPRUNE_GH_HEAD_OIDS='aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'
+    export GWTPRUNE_REV_PARSE GWTPRUNE_SECOND_WT GWTPRUNE_SECOND_BRANCH
+    export GWTPRUNE_SQUASHED_OID GWTPRUNE_GH_HEAD_OIDS
+
+    When call gwtprune
+    The output should include 'git worktree remove /tmp/main-repo-worktrees/squashed'
+    The output should include 'git branch -D squashed'
+    The output should include 'git worktree prune -v'
+  End
+
   It 'does not remove when directory name does not match checked-out branch'
     GWTPRUNE_REV_PARSE=/tmp/main-repo
     GWTPRUNE_SECOND_WT=/tmp/main-repo-worktrees/foo-dir
-    export GWTPRUNE_REV_PARSE GWTPRUNE_SECOND_WT
+    GWTPRUNE_SECOND_BRANCH=gone
+    GWTPRUNE_GH_HEAD_OIDS=''
+    export GWTPRUNE_REV_PARSE GWTPRUNE_SECOND_WT GWTPRUNE_SECOND_BRANCH
+    export GWTPRUNE_GH_HEAD_OIDS
 
     When call gwtprune
     The output should not include 'git worktree remove'
@@ -520,7 +589,10 @@ Describe 'gwtprune'
   It 'skips removal when cwd is the matching stale worktree'
     GWTPRUNE_REV_PARSE=/tmp/main-repo-worktrees/gone
     GWTPRUNE_SECOND_WT=/tmp/main-repo-worktrees/gone
-    export GWTPRUNE_REV_PARSE GWTPRUNE_SECOND_WT
+    GWTPRUNE_SECOND_BRANCH=gone
+    GWTPRUNE_GH_HEAD_OIDS=''
+    export GWTPRUNE_REV_PARSE GWTPRUNE_SECOND_WT GWTPRUNE_SECOND_BRANCH
+    export GWTPRUNE_GH_HEAD_OIDS
 
     When call gwtprune
     The stderr should include 'gwtprune: skipping /tmp/main-repo-worktrees/gone (current directory)'

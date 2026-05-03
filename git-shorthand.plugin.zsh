@@ -186,9 +186,28 @@ gwtcd () {
     fi
 }
 
+# Helper: returns success when GitHub reports that this exact branch tip was merged into main.
+_git-local-branch-has-merged-github-pr () {
+    local branch="$1"
+    local main_branch="$2"
+
+    command -v gh >/dev/null 2>&1 || return 1
+
+    local branch_oid
+    branch_oid=$(git rev-parse --verify "refs/heads/$branch" 2>/dev/null) || return 1
+
+    local pr_oid
+    for pr_oid in "${(@f)$(gh pr list --state merged --base "$main_branch" --head "$branch" --json headRefOid --jq '.[].headRefOid' 2>/dev/null)}"; do
+        [[ "$pr_oid" == "$branch_oid" ]] && return 0
+    done
+
+    return 1
+}
+
 # List local branch names stale relative to origin's main branch: upstream gone, merged into
-# main, or identical tree to main. Always omits the main branch itself. If $1 is set, that
-# branch name is omitted (gbprune passes the current HEAD so it is not deleted in place).
+# main, identical tree to main, or reported merged by GitHub. Always omits the main branch
+# itself. If $1 is set, that branch name is omitted (gbprune passes the current HEAD so it is
+# not deleted in place).
 _git-stale-local-branches () {
     local exclude_branch="${1-}"
 
@@ -220,6 +239,15 @@ _git-stale-local-branches () {
         [[ -n "$exclude_branch" && "$branch" == "$exclude_branch" ]] && continue
         [[ "$branch" == "$main_branch" ]] && continue
         if git diff --quiet "$main_ref" "$branch" 2>/dev/null; then
+            to_delete+=("$branch")
+        fi
+    done
+
+    # 4. Branches whose exact tip was merged through a GitHub PR (squash merge, etc.)
+    for branch in $(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null); do
+        [[ -n "$exclude_branch" && "$branch" == "$exclude_branch" ]] && continue
+        [[ "$branch" == "$main_branch" ]] && continue
+        if _git-local-branch-has-merged-github-pr "$branch" "$main_branch"; then
             to_delete+=("$branch")
         fi
     done

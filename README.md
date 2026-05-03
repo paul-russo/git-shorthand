@@ -61,7 +61,7 @@ These commands work with either `master` or `main` branches automatically:
 - `gfmnb <branch>` - Fetch main, then create new branch from it
 - `gpm` - Pull from main
 - `gprm` - Fetch main and rebase current branch on it
-- `gbprune` - Fetch with prune, then force-delete local branches whose changes are fully in main (handles gone upstream, regular merge, squash merge, rebase merge)
+- `gbprune` - Fetch with prune, then force-delete local branches whose changes are fully in main (handles gone upstream, regular merge, rebase merge, identical tree, and squash-merged GitHub PRs when `gh` is available)
 - `gpbprune` - Pull, then `gbprune` (update current branch, then clean merged local branches)
 
 If you use linked worktrees under `{repo_name}-worktrees/`, run `gwtprune` before `gbprune` when cleaning up stale branches. Git will not delete a branch that is still checked out in another worktree until that checkout is removed.
@@ -76,4 +76,4 @@ Worktrees are stored in a `{repo_name}-worktrees/` sibling directory to keep you
 - `gwtd <branch>` - Remove a clean worktree while preserving its branch; rejects if the branch has uncommitted changes, has no upstream or commits missing from its upstream, or is not stale by the same rules as `gbprune`
 - `gwtd --force <branch>` - Remove a worktree while preserving its branch, skipping dirty/upstream/stale safety checks
 - `gwtcd <branch>` - `cd` into a worktree by branch name (`root` goes to the primary repo worktree; `main` is a normal branch name)
-- `gwtprune` - Fetch with prune; remove `{repo}-worktrees/<branch>` checkouts whose relative path matches the checked-out branch and that branch is stale (same detection as `gbprune`); then `git worktree prune -v`. Skips the primary worktree, non-plugin paths, detached HEAD, branch/path mismatches, and the worktree you are currently in. If remove fails (for example dirty tree or submodules), use `gwtd --force <branch>` for that checkout.
+- `gwtprune` - Fetch with prune; remove `{repo}-worktrees/<branch>` checkouts whose relative path matches the checked-out branch and that branch is stale (same detection as `gbprune`, including merged GitHub PRs when `gh` is available); then `git worktree prune -v`. Skips the primary worktree, non-plugin paths, detached HEAD, branch/path mismatches, and the worktree you are currently in. If remove fails (for example dirty tree or submodules), use `gwtd --force <branch>` for that checkout.
