@@ -381,15 +381,26 @@ gwtd () {
 # Prune local branches that have been fully merged into main (by any method).
 # Handles: upstream gone, regular merge, squash merge, rebase merge.
 gbprune () {
-    git fetch --prune
+    print -r -- "gbprune: fetching remotes with prune..."
+    git fetch --prune || return 1
 
     local current branch
     current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 
+    print -r -- "gbprune: checking local branches..."
+    local deleted_branches=0 failed_branches=0
     for branch in "${(@f)$(_git-stale-local-branches "$current")}"; do
         [[ -z "$branch" ]] && continue
-        git branch -D "$branch"
+        print -r -- "gbprune: deleting branch $branch"
+        if git branch -D "$branch"; then
+            (( deleted_branches += 1 ))
+        else
+            (( failed_branches += 1 ))
+        fi
     done
+
+    print -r -- "gbprune: deleted $deleted_branches branch(es), failed $failed_branches"
+    (( failed_branches == 0 ))
 }
 
 # Pull current branch, then prune local branches fully merged into main (see gbprune).
@@ -402,7 +413,8 @@ gpbprune () {
 # primary worktree, detached HEAD, mismatched path/branch, and the worktree you are in. Finishes
 # with git worktree prune for leftover administrative cruft.
 gwtprune () {
-    git fetch --prune
+    print -r -- "gwtprune: fetching remotes with prune..."
+    git fetch --prune || return 1
 
     local porcelain main_wt wt_base repo_root
     # One `git worktree list --porcelain` for main path, wt_base, and parsing (not separate calls).
@@ -419,6 +431,8 @@ gwtprune () {
         [[ -n "$b" ]] && stale_map[$b]=1
     done
 
+    print -r -- "gwtprune: scanning worktrees (${#stale_map} stale branch candidate(s))..."
+    local removed_worktrees=0 deleted_branches=0 skipped_current=0 failed_worktrees=0 failed_branches=0
     local wt_path="" wt_branch="" saw_detached=0
 
     flush_wt_record () {
@@ -450,14 +464,23 @@ gwtprune () {
 
         if [[ "$wt_path" == "$repo_root" ]]; then
             print -r -- "gwtprune: skipping $wt_path (current directory)" >&2
+            (( skipped_current += 1 ))
             wt_path="" wt_branch="" saw_detached=0
             return 0
         fi
 
+        print -r -- "gwtprune: removing worktree $wt_path ($wt_branch)"
         if git worktree remove "$wt_path"; then
-            git branch -D "$wt_branch"
+            (( removed_worktrees += 1 ))
+            print -r -- "gwtprune: deleting branch $wt_branch"
+            if git branch -D "$wt_branch"; then
+                (( deleted_branches += 1 ))
+            else
+                (( failed_branches += 1 ))
+            fi
         else
             print -r -- "gwtprune: worktree remove failed for $wt_path" >&2
+            (( failed_worktrees += 1 ))
         fi
 
         wt_path="" wt_branch="" saw_detached=0
@@ -491,7 +514,10 @@ gwtprune () {
 
     flush_wt_record
 
-    git worktree prune -v
+    local prune_status=0
+    git worktree prune -v || prune_status=$?
+    print -r -- "gwtprune: removed $removed_worktrees worktree(s), deleted $deleted_branches branch(es), skipped $skipped_current current worktree(s), failed $failed_worktrees worktree removal(s), failed $failed_branches branch deletion(s)"
+    (( prune_status == 0 && failed_worktrees == 0 && failed_branches == 0 ))
 }
 
 # Pull from main

@@ -94,8 +94,12 @@ Describe 'gbprune (prune merged branches)'
 
   It 'fetches with prune and force-deletes branches fully merged into main'
     When call gbprune
+    The output should include 'gbprune: fetching remotes with prune...'
+    The output should include 'gbprune: checking local branches...'
     The output should include 'git fetch --prune'
+    The output should include 'gbprune: deleting branch gone'
     The output should include 'git branch -D gone'
+    The output should include 'gbprune: deleted 2 branch(es), failed 0'
   End
 
   It 'parses linked-worktree branch markers as status, not branch names'
@@ -184,5 +188,6 @@ Describe 'gpbprune (pull then branch prune)'
     The output should include 'git pull'
     The output should include 'git fetch --prune'
     The output should include 'git branch -D gone'
+    The output should include 'gbprune: deleted 1 branch(es), failed 0'
   End
 End

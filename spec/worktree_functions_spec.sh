@@ -552,10 +552,15 @@ Describe 'gwtprune'
     export GWTPRUNE_GH_HEAD_OIDS
 
     When call gwtprune
+    The output should include 'gwtprune: fetching remotes with prune...'
+    The output should include 'gwtprune: scanning worktrees'
     The output should include 'git fetch --prune'
+    The output should include 'gwtprune: removing worktree /tmp/main-repo-worktrees/gone (gone)'
     The output should include 'git worktree remove /tmp/main-repo-worktrees/gone'
+    The output should include 'gwtprune: deleting branch gone'
     The output should include 'git branch -D gone'
     The output should include 'git worktree prune -v'
+    The output should include 'gwtprune: removed 1 worktree(s), deleted 1 branch(es), skipped 0 current worktree(s), failed 0 worktree removal(s), failed 0 branch deletion(s)'
   End
 
   It 'removes plugin-layout worktrees when the branch was squash-merged on GitHub'
@@ -571,6 +576,7 @@ Describe 'gwtprune'
     The output should include 'git worktree remove /tmp/main-repo-worktrees/squashed'
     The output should include 'git branch -D squashed'
     The output should include 'git worktree prune -v'
+    The output should include 'gwtprune: removed 1 worktree(s), deleted 1 branch(es), skipped 0 current worktree(s), failed 0 worktree removal(s), failed 0 branch deletion(s)'
   End
 
   It 'does not remove when directory name does not match checked-out branch'
@@ -598,5 +604,6 @@ Describe 'gwtprune'
     The stderr should include 'gwtprune: skipping /tmp/main-repo-worktrees/gone (current directory)'
     The output should not include 'git worktree remove'
     The output should include 'git worktree prune -v'
+    The output should include 'gwtprune: removed 0 worktree(s), deleted 0 branch(es), skipped 1 current worktree(s), failed 0 worktree removal(s), failed 0 branch deletion(s)'
   End
 End
