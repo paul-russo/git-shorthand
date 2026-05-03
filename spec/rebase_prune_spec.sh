@@ -49,11 +49,13 @@ Describe 'gbprune (prune merged branches)'
         if [[ "${2:-}" = "-vv" ]]; then
           printf '  main    abc123 [origin/main] commit msg\n'
           printf '  gone    def456 [origin/gone: gone] old msg\n'
+          printf '+ linked ccc333 [origin/linked: gone] linked worktree msg\n'
           return 0
         fi
         if [[ "${2:-}" = "--merged" ]]; then
           printf '  main    abc123\n'
           printf '  gone    def456\n'
+          printf '+ linked ccc333\n'
           return 0
         fi
         printf '%s\n' "git $*"
@@ -62,6 +64,7 @@ Describe 'gbprune (prune merged branches)'
       for-each-ref)
         printf 'main\n'
         printf 'gone\n'
+        printf 'linked\n'
         if [[ -n "${GBPRUNE_EXTRA_BRANCH:-}" ]]; then
           printf '%s\n' "$GBPRUNE_EXTRA_BRANCH"
         fi
@@ -93,6 +96,12 @@ Describe 'gbprune (prune merged branches)'
     When call gbprune
     The output should include 'git fetch --prune'
     The output should include 'git branch -D gone'
+  End
+
+  It 'parses linked-worktree branch markers as status, not branch names'
+    When call gbprune
+    The output should include 'git branch -D linked'
+    The output should not include 'git branch -D +'
   End
 
   It 'force-deletes branches whose current tip was merged through a GitHub PR'

@@ -204,6 +204,11 @@ _git-local-branch-has-merged-github-pr () {
     return 1
 }
 
+# Helper: extracts branch names from `git branch` output, ignoring status markers.
+_git-branch-list-names () {
+    awk '($1 == "*" || $1 == "+") { print $2; next } { print $1 }'
+}
+
 # List local branch names stale relative to origin's main branch: upstream gone, merged into
 # main, identical tree to main, or reported merged by GitHub. Always omits the main branch
 # itself. If $1 is set, that branch name is omitted (gbprune passes the current HEAD so it is
@@ -224,7 +229,7 @@ _git-stale-local-branches () {
         [[ -n "$exclude_branch" && "$branch" == "$exclude_branch" ]] && continue
         [[ "$branch" == "$main_branch" ]] && continue
         to_delete+=("$branch")
-    done < <(git branch -vv 2>/dev/null | grep ': gone]' | sed 's/^\*//' | awk '{print $1}')
+    done < <(git branch -vv 2>/dev/null | grep ': gone]' | _git-branch-list-names)
 
     # 2. Branches whose commits are ancestors of main (regular merge, rebase)
     while read -r branch; do
@@ -232,7 +237,7 @@ _git-stale-local-branches () {
         [[ -n "$exclude_branch" && "$branch" == "$exclude_branch" ]] && continue
         [[ "$branch" == "$main_branch" ]] && continue
         to_delete+=("$branch")
-    done < <(git branch --merged "$main_ref" 2>/dev/null | sed 's/^\*//' | awk '{print $1}')
+    done < <(git branch --merged "$main_ref" 2>/dev/null | _git-branch-list-names)
 
     # 3. Branches with identical tree to main (squash merge, etc.)
     for branch in $(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null); do
@@ -284,7 +289,7 @@ _git-local-branch-has-gone-upstream () {
     local target_branch="$1"
     local gone_branch
 
-    for gone_branch in "${(@f)$(git branch -vv 2>/dev/null | grep ': gone]' | sed 's/^\*//' | awk '{print $1}')}"; do
+    for gone_branch in "${(@f)$(git branch -vv 2>/dev/null | grep ': gone]' | _git-branch-list-names)}"; do
         [[ -z "$gone_branch" ]] && continue
         [[ "$gone_branch" == "$target_branch" ]] && return 0
     done
