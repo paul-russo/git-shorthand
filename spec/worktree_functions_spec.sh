@@ -212,18 +212,54 @@ Describe 'gwtd (remove worktree while preserving branch)'
         return 0
         ;;
       for-each-ref)
-        printf 'main\n'
-        printf 'merged\n'
-        printf 'dirty\n'
-        printf 'unpushed\n'
-        printf 'fresh\n'
-        printf 'gone\n'
-        printf 'local\n'
-        printf 'squashed\n'
+        case "$*" in
+          *upstream:track*)
+            printf 'main\t\n'
+            printf 'merged\t\n'
+            printf 'dirty\t\n'
+            printf 'unpushed\t\n'
+            printf 'fresh\t\n'
+            printf 'gone\t[gone]\n'
+            printf 'local\t\n'
+            printf 'squashed\t\n'
+            ;;
+          *--merged*)
+            if [ "${GWTD_IS_STALE:-1}" = "1" ]; then
+              printf 'merged\n'
+              printf 'dirty\n'
+              printf 'unpushed\n'
+              printf 'gone\n'
+              printf 'local\n'
+            fi
+            ;;
+          *objectname*)
+            printf 'main\t1111111111111111111111111111111111111111\n'
+            printf 'merged\t2222222222222222222222222222222222222222\n'
+            printf 'dirty\t3333333333333333333333333333333333333333\n'
+            printf 'unpushed\t4444444444444444444444444444444444444444\n'
+            printf 'fresh\t5555555555555555555555555555555555555555\n'
+            printf 'gone\t6666666666666666666666666666666666666666\n'
+            printf 'local\t7777777777777777777777777777777777777777\n'
+            printf 'squashed\t%s\n' "${GWTD_SQUASHED_OID:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}"
+            ;;
+          *)
+            printf 'main\n'
+            printf 'merged\n'
+            printf 'dirty\n'
+            printf 'unpushed\n'
+            printf 'fresh\n'
+            printf 'gone\n'
+            printf 'local\n'
+            printf 'squashed\n'
+            ;;
+        esac
         return 0
         ;;
       diff)
         return 1
+        ;;
+      log|patch-id)
+        return 0
         ;;
       *)
         printf '%s\n' "git $*"
@@ -487,13 +523,34 @@ Describe 'gwtprune'
           return 0
           ;;
         for-each-ref)
-          printf 'main\n'
-          printf 'gone\n'
-          printf 'squashed\n'
+          case "$*" in
+            *upstream:track*)
+              printf 'main\t\n'
+              printf 'gone\t[gone]\n'
+              printf 'squashed\t\n'
+              ;;
+            *--merged*)
+              printf 'main\n'
+              printf 'gone\n'
+              ;;
+            *objectname*)
+              printf 'main\t1111111111111111111111111111111111111111\n'
+              printf 'gone\t2222222222222222222222222222222222222222\n'
+              printf 'squashed\t%s\n' "${GWTPRUNE_SQUASHED_OID:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}"
+              ;;
+            *)
+              printf 'main\n'
+              printf 'gone\n'
+              printf 'squashed\n'
+              ;;
+          esac
           return 0
           ;;
         diff)
           return 1
+          ;;
+        merge-base|log|patch-id)
+          return 0
           ;;
         worktree)
           case "$*" in
@@ -533,8 +590,10 @@ Describe 'gwtprune'
 
   Mock gh
     case "$*" in
-      pr\ list*--head\ squashed*)
-        printf '%s\n' "${GWTPRUNE_GH_HEAD_OIDS:-}"
+      pr\ list*headRefName*headRefOid*)
+        if [[ -n "${GWTPRUNE_GH_HEAD_OIDS:-}" ]]; then
+          printf 'squashed\t%s\n' "$GWTPRUNE_GH_HEAD_OIDS"
+        fi
         return 0
         ;;
       *)

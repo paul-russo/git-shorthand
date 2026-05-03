@@ -186,79 +186,143 @@ gwtcd () {
     fi
 }
 
-# Helper: returns success when GitHub reports that this exact branch tip was merged into main.
-_git-local-branch-has-merged-github-pr () {
-    local branch="$1"
-    local main_branch="$2"
-
-    command -v gh >/dev/null 2>&1 || return 1
-
-    local branch_oid
-    branch_oid=$(git rev-parse --verify "refs/heads/$branch" 2>/dev/null) || return 1
-
-    local pr_oid
-    for pr_oid in "${(@f)$(gh pr list --state merged --base "$main_branch" --head "$branch" --json headRefOid --jq '.[].headRefOid' 2>/dev/null)}"; do
-        [[ "$pr_oid" == "$branch_oid" ]] && return 0
-    done
-
-    return 1
+# Helper: list local branch names without invoking the human-oriented `git branch` formatter.
+_git-local-branch-names () {
+    git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null
 }
 
-# Helper: extracts branch names from `git branch` output, ignoring status markers.
-_git-branch-list-names () {
-    awk '($1 == "*" || $1 == "+") { print $2; next } { print $1 }'
+# Helper: print a branch merge-base and aggregate patch-id for comparing squash-equivalent changes.
+_git-local-branch-patch-id () {
+    local branch="$1"
+    local main_ref="$2"
+
+    local merge_base
+    merge_base=$(git merge-base "$main_ref" "$branch" 2>/dev/null) || return 1
+
+    local branch_patch
+    branch_patch=$(git diff "$merge_base" "$branch" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{ print $1; exit }') || return 1
+    [[ -n "$branch_patch" ]] || return 1
+
+    print -r -- "$merge_base	$branch_patch"
+}
+
+# Helper: print candidate branches whose exact tips are reported merged by GitHub.
+_git-github-merged-local-branches () {
+    local main_branch="$1"
+    shift
+
+    command -v gh >/dev/null 2>&1 || return 0
+    (( $# > 0 )) || return 0
+
+    local -A candidate_name_map candidate_oid_by_branch
+    local branch oid
+    for branch in "$@"; do
+        [[ -n "$branch" ]] && candidate_name_map[$branch]=1
+    done
+
+    while IFS=$'\t' read -r branch oid; do
+        [[ -n "$branch" && -n "$oid" ]] || continue
+        if [[ -n "${candidate_name_map[$branch]-}" ]]; then
+            candidate_oid_by_branch[$branch]="$oid"
+        fi
+    done < <(git for-each-ref --format=$'%(refname:short)\t%(objectname)' refs/heads 2>/dev/null)
+
+    (( ${#candidate_oid_by_branch} > 0 )) || return 0
+
+    local pr_branch pr_oid
+    while IFS=$'\t' read -r pr_branch pr_oid; do
+        [[ -n "$pr_branch" && -n "$pr_oid" ]] || continue
+        [[ "${candidate_oid_by_branch[$pr_branch]-}" == "$pr_oid" ]] && print -r -- "$pr_branch"
+    done < <(gh pr list --state merged --base "$main_branch" --limit 1000 --json headRefName,headRefOid --jq '.[] | [.headRefName, .headRefOid] | @tsv' 2>/dev/null)
 }
 
 # List local branch names stale relative to origin's main branch: upstream gone, merged into
-# main, identical tree to main, or reported merged by GitHub. Always omits the main branch
-# itself. If $1 is set, that branch name is omitted (gbprune passes the current HEAD so it is
-# not deleted in place).
+# main, equivalent changes already on main, or reported merged by GitHub. Always omits the
+# main branch itself. If $1 is set, that branch name is omitted (gbprune passes the current
+# HEAD so it is not deleted in place). Additional arguments restrict detection to those branch
+# names, which lets worktree pruning avoid classifying unrelated local branches.
 _git-stale-local-branches () {
     local exclude_branch="${1-}"
+    shift 2>/dev/null || true
 
     local main_branch main_ref
     main_branch=$(git-main-branch)
     main_ref="origin/$main_branch"
 
-    local -a to_delete
-    local branch
+    local -a candidates unstale_candidates
+    if (( $# > 0 )); then
+        candidates=("$@")
+    else
+        candidates=("${(@f)$(_git-local-branch-names)}")
+    fi
 
-    # 1. Branches whose upstream remote-tracking ref is gone
-    while read -r branch; do
+    local -A candidate_map stale_map
+    local branch
+    for branch in "${candidates[@]}"; do
         [[ -z "$branch" ]] && continue
         [[ -n "$exclude_branch" && "$branch" == "$exclude_branch" ]] && continue
         [[ "$branch" == "$main_branch" ]] && continue
-        to_delete+=("$branch")
-    done < <(git branch -vv 2>/dev/null | grep ': gone]' | _git-branch-list-names)
+        candidate_map[$branch]=1
+    done
+
+    (( ${#candidate_map} > 0 )) || return 0
+
+    # 1. Branches whose upstream remote-tracking ref is gone
+    local track
+    while IFS=$'\t' read -r branch track; do
+        [[ -z "$branch" ]] && continue
+        [[ -z "${candidate_map[$branch]-}" ]] && continue
+        [[ "$track" == "[gone]" ]] && stale_map[$branch]=1
+    done < <(git for-each-ref --format=$'%(refname:short)\t%(upstream:track)' refs/heads 2>/dev/null)
 
     # 2. Branches whose commits are ancestors of main (regular merge, rebase)
     while read -r branch; do
         [[ -z "$branch" ]] && continue
-        [[ -n "$exclude_branch" && "$branch" == "$exclude_branch" ]] && continue
-        [[ "$branch" == "$main_branch" ]] && continue
-        to_delete+=("$branch")
-    done < <(git branch --merged "$main_ref" 2>/dev/null | _git-branch-list-names)
+        [[ -z "${candidate_map[$branch]-}" ]] && continue
+        stale_map[$branch]=1
+    done < <(git for-each-ref --merged "$main_ref" --format='%(refname:short)' refs/heads 2>/dev/null)
 
-    # 3. Branches with identical tree to main (squash merge, etc.)
-    for branch in $(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null); do
-        [[ -n "$exclude_branch" && "$branch" == "$exclude_branch" ]] && continue
-        [[ "$branch" == "$main_branch" ]] && continue
+    # 3. Branches whose net changes are already on main (identical tree, squash, etc.)
+    local -A main_patch_ids_by_base
+    local patch_info merge_base branch_patch main_patch_ids
+    for branch in "${(@k)candidate_map}"; do
+        [[ -n "${stale_map[$branch]-}" ]] && continue
+
         if git diff --quiet "$main_ref" "$branch" 2>/dev/null; then
-            to_delete+=("$branch")
+            stale_map[$branch]=1
+            continue
+        fi
+
+        patch_info=$(_git-local-branch-patch-id "$branch" "$main_ref") || continue
+        merge_base="${patch_info%%$'\t'*}"
+        branch_patch="${patch_info#*$'\t'}"
+
+        if (( ! ${+main_patch_ids_by_base[$merge_base]} )); then
+            main_patch_ids=$(git log --no-merges --format=format:%H -p "$merge_base..$main_ref" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{ print $1 }')
+            main_patch_ids_by_base[$merge_base]=$'\n'"$main_patch_ids"$'\n'
+        fi
+
+        if [[ "${main_patch_ids_by_base[$merge_base]}" == *$'\n'"$branch_patch"$'\n'* ]]; then
+            stale_map[$branch]=1
         fi
     done
 
     # 4. Branches whose exact tip was merged through a GitHub PR (squash merge, etc.)
-    for branch in $(git for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null); do
-        [[ -n "$exclude_branch" && "$branch" == "$exclude_branch" ]] && continue
-        [[ "$branch" == "$main_branch" ]] && continue
-        if _git-local-branch-has-merged-github-pr "$branch" "$main_branch"; then
-            to_delete+=("$branch")
-        fi
+    for branch in "${(@k)candidate_map}"; do
+        [[ -z "${stale_map[$branch]-}" ]] && unstale_candidates+=("$branch")
     done
 
-    for branch in "${(u)to_delete[@]}"; do
-        [[ -n "$branch" ]] && print -r -- "$branch"
+    for branch in "${(@f)$(_git-github-merged-local-branches "$main_branch" "${unstale_candidates[@]}")}"; do
+        [[ -n "${candidate_map[$branch]-}" ]] && stale_map[$branch]=1
+    done
+
+    local -A printed_map
+    for branch in "${candidates[@]}"; do
+        [[ -z "$branch" ]] && continue
+        [[ -z "${stale_map[$branch]-}" ]] && continue
+        [[ -n "${printed_map[$branch]-}" ]] && continue
+        printed_map[$branch]=1
+        print -r -- "$branch"
     done
 }
 
@@ -267,7 +331,7 @@ _git-local-branch-is-stale () {
     local target_branch="$1"
     local stale_branch
 
-    for stale_branch in "${(@f)$(_git-stale-local-branches)}"; do
+    for stale_branch in "${(@f)$(_git-stale-local-branches "" "$target_branch")}"; do
         [[ -z "$stale_branch" ]] && continue
         [[ "$stale_branch" == "$target_branch" ]] && return 0
     done
@@ -287,12 +351,11 @@ _git-local-branch-is-fully-upstreamed () {
 # Helper: returns success when the branch's configured upstream has been pruned away.
 _git-local-branch-has-gone-upstream () {
     local target_branch="$1"
-    local gone_branch
+    local branch track
 
-    for gone_branch in "${(@f)$(git branch -vv 2>/dev/null | grep ': gone]' | _git-branch-list-names)}"; do
-        [[ -z "$gone_branch" ]] && continue
-        [[ "$gone_branch" == "$target_branch" ]] && return 0
-    done
+    while IFS=$'\t' read -r branch track; do
+        [[ "$branch" == "$target_branch" && "$track" == "[gone]" ]] && return 0
+    done < <(git for-each-ref --format=$'%(refname:short)\t%(upstream:track)' refs/heads 2>/dev/null)
 
     return 1
 }
@@ -425,14 +488,7 @@ gwtprune () {
 
     repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
 
-    local -A stale_map
-    local b
-    for b in "${(@f)$(_git-stale-local-branches)}"; do
-        [[ -n "$b" ]] && stale_map[$b]=1
-    done
-
-    print -r -- "gwtprune: scanning worktrees (${#stale_map} stale branch candidate(s))..."
-    local removed_worktrees=0 deleted_branches=0 skipped_current=0 failed_worktrees=0 failed_branches=0
+    local -a candidate_wt_paths candidate_wt_branches candidate_branches
     local wt_path="" wt_branch="" saw_detached=0
 
     flush_wt_record () {
@@ -457,32 +513,9 @@ gwtprune () {
             return 0
         fi
 
-        if [[ -z "${stale_map[$wt_branch]-}" ]]; then
-            wt_path="" wt_branch="" saw_detached=0
-            return 0
-        fi
-
-        if [[ "$wt_path" == "$repo_root" ]]; then
-            print -r -- "gwtprune: skipping $wt_path (current directory)" >&2
-            (( skipped_current += 1 ))
-            wt_path="" wt_branch="" saw_detached=0
-            return 0
-        fi
-
-        print -r -- "gwtprune: removing worktree $wt_path ($wt_branch)"
-        if git worktree remove "$wt_path"; then
-            (( removed_worktrees += 1 ))
-            print -r -- "gwtprune: deleting branch $wt_branch"
-            if git branch -D "$wt_branch"; then
-                (( deleted_branches += 1 ))
-            else
-                (( failed_branches += 1 ))
-            fi
-        else
-            print -r -- "gwtprune: worktree remove failed for $wt_path" >&2
-            (( failed_worktrees += 1 ))
-        fi
-
+        candidate_wt_paths+=("$wt_path")
+        candidate_wt_branches+=("$wt_branch")
+        candidate_branches+=("$wt_branch")
         wt_path="" wt_branch="" saw_detached=0
     }
 
@@ -513,6 +546,47 @@ gwtprune () {
     done < <(print -r -- "$porcelain")
 
     flush_wt_record
+
+    local -A stale_map
+    local b
+    if (( ${#candidate_branches} > 0 )); then
+        for b in "${(@f)$(_git-stale-local-branches "" "${candidate_branches[@]}")}"; do
+            [[ -n "$b" ]] && stale_map[$b]=1
+        done
+    fi
+
+    print -r -- "gwtprune: scanning worktrees (${#candidate_branches} managed branch candidate(s), ${#stale_map} stale)..."
+    local removed_worktrees=0 deleted_branches=0 skipped_current=0 failed_worktrees=0 failed_branches=0
+
+    local i
+    for (( i = 1; i <= ${#candidate_wt_paths}; i++ )); do
+        wt_path="${candidate_wt_paths[$i]}"
+        wt_branch="${candidate_wt_branches[$i]}"
+
+        if [[ -z "${stale_map[$wt_branch]-}" ]]; then
+            continue
+        fi
+
+        if [[ "$wt_path" == "$repo_root" ]]; then
+            print -r -- "gwtprune: skipping $wt_path (current directory)" >&2
+            (( skipped_current += 1 ))
+            continue
+        fi
+
+        print -r -- "gwtprune: removing worktree $wt_path ($wt_branch)"
+        if git worktree remove "$wt_path"; then
+            (( removed_worktrees += 1 ))
+            print -r -- "gwtprune: deleting branch $wt_branch"
+            if git branch -D "$wt_branch"; then
+                (( deleted_branches += 1 ))
+            else
+                (( failed_branches += 1 ))
+            fi
+        else
+            print -r -- "gwtprune: worktree remove failed for $wt_path" >&2
+            (( failed_worktrees += 1 ))
+        fi
+    done
 
     local prune_status=0
     git worktree prune -v || prune_status=$?

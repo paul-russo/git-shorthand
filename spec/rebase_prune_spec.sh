@@ -62,16 +62,61 @@ Describe 'gbprune (prune merged branches)'
         return 0
         ;;
       for-each-ref)
-        printf 'main\n'
-        printf 'gone\n'
-        printf 'linked\n'
-        if [[ -n "${GBPRUNE_EXTRA_BRANCH:-}" ]]; then
-          printf '%s\n' "$GBPRUNE_EXTRA_BRANCH"
-        fi
+        case "$*" in
+          *upstream:track*)
+            printf 'main\t\n'
+            printf 'gone\t[gone]\n'
+            printf 'linked\t[gone]\n'
+            if [[ -n "${GBPRUNE_EXTRA_BRANCH:-}" ]]; then
+              printf '%s\t\n' "$GBPRUNE_EXTRA_BRANCH"
+            fi
+            ;;
+          *--merged*)
+            printf 'main\n'
+            printf 'gone\n'
+            printf 'linked\n'
+            ;;
+          *objectname*)
+            printf 'main\t1111111111111111111111111111111111111111\n'
+            printf 'gone\t2222222222222222222222222222222222222222\n'
+            printf 'linked\t3333333333333333333333333333333333333333\n'
+            if [[ -n "${GBPRUNE_EXTRA_BRANCH:-}" ]]; then
+              printf '%s\t%s\n' "$GBPRUNE_EXTRA_BRANCH" "${GBPRUNE_SQUASHED_OID:-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}"
+            fi
+            ;;
+          *)
+            printf 'main\n'
+            printf 'gone\n'
+            printf 'linked\n'
+            if [[ -n "${GBPRUNE_EXTRA_BRANCH:-}" ]]; then
+              printf '%s\n' "$GBPRUNE_EXTRA_BRANCH"
+            fi
+            ;;
+        esac
         return 0
         ;;
       diff)
+        if [[ "${2:-}" != "--quiet" && -n "${GBPRUNE_PATCH_EQ_BRANCH:-}" && "${3:-}" = "$GBPRUNE_PATCH_EQ_BRANCH" ]]; then
+          printf 'patch for %s\n' "$GBPRUNE_PATCH_EQ_BRANCH"
+        fi
         return 1
+        ;;
+      merge-base)
+        printf 'base\n'
+        return 0
+        ;;
+      log)
+        if [[ -n "${GBPRUNE_PATCH_EQ_BRANCH:-}" ]]; then
+          printf 'patch for %s\n' "$GBPRUNE_PATCH_EQ_BRANCH"
+        fi
+        return 0
+        ;;
+      patch-id)
+        patch_input=$(while IFS= read -r line; do printf '%s\n' "$line"; done)
+        if [[ -n "${GBPRUNE_PATCH_EQ_BRANCH:-}" && "$patch_input" = *"$GBPRUNE_PATCH_EQ_BRANCH"* ]]; then
+          printf 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa 0000000000000000000000000000000000000000\n'
+        fi
+        return 0
         ;;
       *)
         printf '%s\n' "git $*"
@@ -82,8 +127,10 @@ Describe 'gbprune (prune merged branches)'
 
   Mock gh
     case "$*" in
-      pr\ list*--head\ squashed*)
-        printf '%s\n' "${GBPRUNE_GH_HEAD_OIDS:-}"
+      pr\ list*headRefName*headRefOid*)
+        if [[ -n "${GBPRUNE_GH_HEAD_OIDS:-}" ]]; then
+          printf 'squashed\t%s\n' "$GBPRUNE_GH_HEAD_OIDS"
+        fi
         return 0
         ;;
       *)
@@ -116,6 +163,15 @@ Describe 'gbprune (prune merged branches)'
 
     When call gbprune
     The output should include 'git branch -D squashed'
+  End
+
+  It 'force-deletes branches whose net patch is already on main'
+    GBPRUNE_EXTRA_BRANCH='patch-equivalent'
+    GBPRUNE_PATCH_EQ_BRANCH='patch-equivalent'
+    export GBPRUNE_EXTRA_BRANCH GBPRUNE_PATCH_EQ_BRANCH
+
+    When call gbprune
+    The output should include 'git branch -D patch-equivalent'
   End
 
   It 'does not delete a branch when GitHub merged an older tip with the same branch name'
@@ -165,12 +221,31 @@ Describe 'gpbprune (pull then branch prune)'
         return 0
         ;;
       for-each-ref)
-        printf 'main\n'
-        printf 'gone\n'
+        case "$*" in
+          *upstream:track*)
+            printf 'main\t\n'
+            printf 'gone\t[gone]\n'
+            ;;
+          *--merged*)
+            printf 'main\n'
+            printf 'gone\n'
+            ;;
+          *objectname*)
+            printf 'main\t1111111111111111111111111111111111111111\n'
+            printf 'gone\t2222222222222222222222222222222222222222\n'
+            ;;
+          *)
+            printf 'main\n'
+            printf 'gone\n'
+            ;;
+        esac
         return 0
         ;;
       diff)
         return 1
+        ;;
+      merge-base|log|patch-id)
+        return 0
         ;;
       *)
         printf '%s\n' "git $*"
