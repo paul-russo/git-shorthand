@@ -555,6 +555,9 @@ Describe 'gwtprune'
         worktree)
           case "$*" in
             *list*--porcelain*)
+              if [ "${GWTPRUNE_LIST_STATUS:-0}" != "0" ]; then
+                return "$GWTPRUNE_LIST_STATUS"
+              fi
               printf 'worktree /tmp/main-repo\n'
               printf 'HEAD 1111111111111111111111111111111111111111\n'
               printf 'branch refs/heads/main\n'
@@ -649,6 +652,7 @@ Describe 'gwtprune'
     When call gwtprune
     The output should not include 'git worktree remove'
     The output should include 'git worktree prune -v'
+    The output should include 'gwtprune: removed 0 worktree(s), deleted 0 branch(es), skipped 0 current worktree(s), failed 0 worktree removal(s), failed 0 branch deletion(s)'
   End
 
   It 'skips removal when cwd is the matching stale worktree'
@@ -664,5 +668,16 @@ Describe 'gwtprune'
     The output should not include 'git worktree remove'
     The output should include 'git worktree prune -v'
     The output should include 'gwtprune: removed 0 worktree(s), deleted 0 branch(es), skipped 1 current worktree(s), failed 0 worktree removal(s), failed 0 branch deletion(s)'
+  End
+
+  It 'prints the summary when worktree listing fails after fetch'
+    GWTPRUNE_LIST_STATUS=1
+    export GWTPRUNE_LIST_STATUS
+
+    When call gwtprune
+    The output should include 'gwtprune: fetching remotes with prune...'
+    The output should include 'git fetch --prune'
+    The output should include 'gwtprune: removed 0 worktree(s), deleted 0 branch(es), skipped 0 current worktree(s), failed 0 worktree removal(s), failed 0 branch deletion(s)'
+    The status should be failure
   End
 End

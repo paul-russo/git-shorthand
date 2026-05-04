@@ -479,14 +479,34 @@ gwtprune () {
     print -r -- "gwtprune: fetching remotes with prune..."
     git fetch --prune || return 1
 
+    local removed_worktrees=0 deleted_branches=0 skipped_current=0 failed_worktrees=0 failed_branches=0
+    # Keep the cleanup summary consistent across normal completion and setup failures.
+    print_summary () {
+        print -r -- "gwtprune: removed $removed_worktrees worktree(s), deleted $deleted_branches branch(es), skipped $skipped_current current worktree(s), failed $failed_worktrees worktree removal(s), failed $failed_branches branch deletion(s)"
+    }
+
     local porcelain main_wt wt_base repo_root
     # One `git worktree list --porcelain` for main path, wt_base, and parsing (not separate calls).
-    porcelain=$(git worktree list --porcelain) || return 1
-    main_wt=$(print -r -- "$porcelain" | sed -n 's/^worktree //p' | head -1)
-    [[ -n "$main_wt" ]] || return 1
-    wt_base=$(_git-wt-base-from-main "$main_wt") || return 1
+    porcelain=$(git worktree list --porcelain) || {
+        print_summary
+        return 1
+    }
 
-    repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
+    main_wt=$(print -r -- "$porcelain" | sed -n 's/^worktree //p' | head -1)
+    if [[ -z "$main_wt" ]]; then
+        print_summary
+        return 1
+    fi
+
+    wt_base=$(_git-wt-base-from-main "$main_wt") || {
+        print_summary
+        return 1
+    }
+
+    repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
+        print_summary
+        return 1
+    }
 
     local -a candidate_wt_paths candidate_wt_branches candidate_branches
     local wt_path="" wt_branch="" saw_detached=0
@@ -556,7 +576,6 @@ gwtprune () {
     fi
 
     print -r -- "gwtprune: scanning worktrees (${#candidate_branches} managed branch candidate(s), ${#stale_map} stale)..."
-    local removed_worktrees=0 deleted_branches=0 skipped_current=0 failed_worktrees=0 failed_branches=0
 
     local i
     for (( i = 1; i <= ${#candidate_wt_paths}; i++ )); do
@@ -590,7 +609,7 @@ gwtprune () {
 
     local prune_status=0
     git worktree prune -v || prune_status=$?
-    print -r -- "gwtprune: removed $removed_worktrees worktree(s), deleted $deleted_branches branch(es), skipped $skipped_current current worktree(s), failed $failed_worktrees worktree removal(s), failed $failed_branches branch deletion(s)"
+    print_summary
     (( prune_status == 0 && failed_worktrees == 0 && failed_branches == 0 ))
 }
 
