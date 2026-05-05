@@ -5,7 +5,7 @@ git-main-branch () {
 
 # Git shorthand aliases
 alias ga="git add"
-alias gaa="git add --a"
+alias gaa="git add --all"
 alias gs="git status"
 alias gsd="git status; git diff"
 alias gbs="git branch; git status"
@@ -14,9 +14,9 @@ alias gd="git diff"
 alias gdx="git diff --staged"
 alias gda="git diff HEAD"
 alias gsc="git status; git commit -m"
-alias gaas="git add --a; git status"
+alias gaas="git add --all; git status"
 alias gst="git stash"
-alias gaast="git add --a; git stash"
+alias gaast="git add --all; git stash"
 alias gstl="git stash list"
 alias gstpo="git stash pop"
 alias gp="git pull"
@@ -40,23 +40,23 @@ gcpp () {
 gcobpp () {
 	git checkout -b "$1"
 	git push -u origin "$1"
-}
+
 
 gaascpp () {
-	git add --a
+	git add --all
 	git status
 	git commit -m "$*"
 	git push
 }
 
 gaacpp () {
-	git add --a
+	git add --all
 	git commit -m "$*"
 	git push
 }
 
 gaac () {
-	git add --a
+	git add --all
 	git commit -m "$*"
 }
 
