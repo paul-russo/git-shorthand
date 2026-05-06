@@ -40,7 +40,7 @@ Describe 'gaacpp (add all, commit, push)'
 
   It 'adds all, commits and pushes'
     When call gaacpp "wip"
-    The line 1 of stdout should eq 'git add --a'
+    The line 1 of stdout should eq 'git add --all'
     The line 2 of stdout should include 'commit -m'
     The line 3 of stdout should eq 'git push'
   End
@@ -54,7 +54,7 @@ Describe 'gaascpp (add all, status, commit, push)'
 
   It 'adds all, shows status, commits and pushes'
     When call gaascpp "release v1"
-    The line 1 of stdout should eq 'git add --a'
+    The line 1 of stdout should eq 'git add --all'
     The line 2 of stdout should eq 'git status'
     The line 3 of stdout should include 'commit -m'
     The line 4 of stdout should eq 'git push'
@@ -69,7 +69,7 @@ Describe 'gaac (add all and commit)'
 
   It 'adds all and commits without pushing'
     When call gaac "chore: update deps"
-    The line 1 of stdout should eq 'git add --a'
+    The line 1 of stdout should eq 'git add --all'
     The line 2 of stdout should include 'commit -m'
     The line 2 of stdout should not include 'push'
   End

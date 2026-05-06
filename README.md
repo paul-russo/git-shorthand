@@ -22,7 +22,7 @@ Currently, the exceptions to these rules are:
 When loaded in `zsh` with completion enabled (`compinit`), shorthand commands complete like their underlying `git` subcommands.
 
 Custom completion is also included for shorthand commands that take branch/worktree names, such as:
-- `git-obliterate`, `gwtco`, `gwtd`, `gwtcd`
+- `git-obliterate`, `gwtco`, `gwtd`, `gwtcd`, `gwtup`
 - `gnb`, `gnbpp`, `gfmnb`, `gwta`, `gfmwta`, `grnb`, `gcobpp`
 
 Branch/worktree name completion uses the same slash-aware matching as zsh’s stock `_git` completion, so names like `cursor/example-branch` complete correctly (not only one path segment at a time).
@@ -72,6 +72,7 @@ Worktrees are stored in a `{repo_name}-worktrees/` sibling directory to keep you
 - `gwta <branch>` - Add worktree with a new branch from main
 - `gfmwta <branch>` - Fetch main, then add worktree with a new branch from it
 - `gwtco <branch>` - Add worktree for an existing branch (e.g. a remote branch); if the worktree already exists, `cd` into it
+- `gwtup <branch>` - Fetch origin, check out an existing local or remote branch in a worktree, or create a new worktree branch from the current branch. Copies root `node_modules` from the current checkout as a cache seed and then runs the detected package-manager install. Supports `--base <ref>`, `--no-fetch`, `--no-node-modules`, and `--no-install`.
 - `gwtl` - List all worktrees
 - `gwtd <branch>` - Remove a clean worktree while preserving its branch; rejects if the branch has uncommitted changes, has no upstream or commits missing from its upstream, or is not stale by the same rules as `gbprune`
 - `gwtd --force <branch>` - Remove a worktree while preserving its branch, skipping dirty/upstream/stale safety checks

@@ -112,6 +112,98 @@ Describe 'gwtco (add worktree for existing branch)'
   End
 End
 
+Describe 'gwtup (create or check out a worktree)'
+  cd() {
+    # shellcheck disable=SC2034
+    # Set in mock cd; asserted by shellspec "The variable GWTUP_CD_PATH"
+    GWTUP_CD_PATH="$1"
+    return 0
+  }
+
+  rsync() {
+    printf '%s\n' "rsync $*"
+    return 0
+  }
+
+  _git-wt-run-with-optional-mise() {
+    printf '%s\n' "install $*"
+    return 0
+  }
+
+  Mock git
+    case "$*" in
+      "worktree list --porcelain")
+        printf 'worktree /tmp/repo\nbranch refs/heads/main\n'
+        ;;
+      "rev-parse --show-toplevel")
+        printf '/tmp/repo\n'
+        ;;
+      "symbolic-ref --quiet --short HEAD")
+        printf 'current-feature\n'
+        ;;
+      "symbolic-ref refs/remotes/origin/HEAD")
+        printf 'refs/remotes/origin/main\n'
+        ;;
+      "fetch origin --prune")
+        printf '%s\n' "git $*"
+        ;;
+      "show-ref --verify --quiet refs/heads/feature")
+        return 1
+        ;;
+      "show-ref --verify --quiet refs/remotes/origin/feature")
+        return 1
+        ;;
+      "show-ref --verify --quiet refs/heads/remote-branch")
+        return 1
+        ;;
+      "show-ref --verify --quiet refs/remotes/origin/remote-branch")
+        return 0
+        ;;
+      "worktree add -b feature /tmp/repo-worktrees/feature current-feature")
+        mkdir -p /tmp/repo-worktrees/feature
+        touch /tmp/repo-worktrees/feature/pnpm-lock.yaml
+        printf '%s\n' "git $*"
+        ;;
+      "worktree add --track -b remote-branch /tmp/repo-worktrees/remote-branch origin/remote-branch")
+        printf '%s\n' "git $*"
+        ;;
+      *)
+        printf '%s\n' "unexpected git $*" >&2
+        return 1
+        ;;
+    esac
+  End
+
+  It 'creates a new branch worktree, seeds node_modules, and installs dependencies'
+    rm -rf /tmp/repo /tmp/repo-worktrees/feature 2>/dev/null || true
+    mkdir -p /tmp/repo/node_modules 2>/dev/null || true
+
+    When call gwtup "feature"
+    The output should include 'git fetch origin --prune'
+    The output should include 'git worktree add -b feature /tmp/repo-worktrees/feature current-feature'
+    The output should include 'rsync -a /tmp/repo/node_modules/ /tmp/repo-worktrees/feature/node_modules/'
+    The output should include 'install pnpm install --prefer-offline'
+  End
+
+  It 'checks out an existing remote branch without cache or install when requested'
+    rm -rf /tmp/repo-worktrees/remote-branch 2>/dev/null || true
+
+    When call gwtup --no-fetch --no-node-modules --no-install "remote-branch"
+    The output should include 'git worktree add --track -b remote-branch /tmp/repo-worktrees/remote-branch origin/remote-branch'
+    The output should not include 'git fetch origin --prune'
+    The output should not include 'rsync -a'
+    The output should not include 'install'
+  End
+
+  It 'changes to an existing worktree instead of adding it again'
+    mkdir -p /tmp/repo-worktrees/existing-branch 2>/dev/null || true
+
+    When call gwtup "existing-branch"
+    The output should not include 'worktree add'
+    The variable GWTUP_CD_PATH should eq "/tmp/repo-worktrees/existing-branch"
+  End
+End
+
 Describe 'gwtl (list worktrees)'
   Mock git
     printf '%s\n' "git $*"

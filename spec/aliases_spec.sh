@@ -12,9 +12,9 @@ Describe 'git shorthand aliases'
     The output should eq 'git add file.txt'
   End
 
-  It 'gaa expands to git add --a'
+  It 'gaa expands to git add --all'
     When call eval 'gaa'
-    The output should eq 'git add --a'
+    The output should eq 'git add --all'
   End
 
   It 'gs expands to git status'

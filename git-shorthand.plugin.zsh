@@ -166,6 +166,221 @@ gwtco () {
     git worktree add "$wt_path" "$1"
 }
 
+# Helper: map refs like origin/main or refs/heads/main to the branch name stored in worktree metadata.
+_git-wt-local-branch-for-ref () {
+    local ref="$1"
+
+    case "$ref" in
+        refs/heads/*)
+            print -r -- "${ref#refs/heads/}"
+            ;;
+        origin/*)
+            print -r -- "${ref#origin/}"
+            ;;
+        *)
+            print -r -- "$ref"
+            ;;
+    esac
+}
+
+# Helper: find the checked-out worktree for a branch, which lets cache seeding prefer the base checkout.
+_git-wt-worktree-for-branch () {
+    local branch="$1"
+
+    git worktree list --porcelain | awk -v branch="refs/heads/$branch" '
+        /^worktree / { path = substr($0, 10) }
+        $0 == "branch " branch { print path; found = 1; exit }
+        END { if (!found) exit 1 }
+    '
+}
+
+# Helper: use the current branch as a default base, while still supporting detached HEAD.
+_git-wt-current-branch-or-head () {
+    local branch
+
+    branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null)" || {
+        print -r -- "HEAD"
+        return 0
+    }
+
+    print -r -- "$branch"
+}
+
+# Helper: copy root node_modules as a warm cache; package-manager install still repairs the result.
+_git-wt-seed-node-modules () {
+    local source_root="$1"
+    local target_root="$2"
+
+    if [[ ! -d "$source_root/node_modules" ]]; then
+        print -r -- "gwtup: no node_modules found at $source_root; skipping cache seed"
+        return 0
+    fi
+
+    if [[ -e "$target_root/node_modules" ]]; then
+        print -r -- "gwtup: node_modules already exists in target; skipping cache seed"
+        return 0
+    fi
+
+    print -r -- "gwtup: copying node_modules from $source_root"
+    mkdir -p "$target_root/node_modules"
+    rsync -a "$source_root/node_modules/" "$target_root/node_modules/"
+}
+
+# Helper: use mise-pinned tools when available, while still working in small repos without mise.
+_git-wt-run-with-optional-mise () {
+    if command -v mise >/dev/null 2>&1; then
+        mise exec -- "$@"
+        return
+    fi
+
+    "$@"
+}
+
+# Helper: run the detected package manager so seeded dependencies match the target lockfile.
+_git-wt-install-deps () {
+    local target_root="$1"
+
+    if [[ -f "$target_root/pnpm-lock.yaml" ]]; then
+        print -r -- "gwtup: running pnpm install --prefer-offline"
+        (cd "$target_root" && _git-wt-run-with-optional-mise pnpm install --prefer-offline)
+        return
+    fi
+
+    if [[ -f "$target_root/yarn.lock" ]]; then
+        print -r -- "gwtup: running yarn install"
+        (cd "$target_root" && _git-wt-run-with-optional-mise yarn install)
+        return
+    fi
+
+    if [[ -f "$target_root/package-lock.json" ]]; then
+        print -r -- "gwtup: running npm ci --prefer-offline"
+        (cd "$target_root" && _git-wt-run-with-optional-mise npm ci --prefer-offline)
+        return
+    fi
+
+    if [[ -f "$target_root/package.json" ]]; then
+        print -r -- "gwtup: running npm install --prefer-offline"
+        (cd "$target_root" && _git-wt-run-with-optional-mise npm install --prefer-offline)
+        return
+    fi
+
+    print -r -- "gwtup: no package manifest found; skipping install"
+}
+
+# Bring up a worktree by checking out an existing branch or creating a new one from the current branch.
+gwtup () {
+    local base_ref=""
+    local branch=""
+    local fetch_origin=1
+    local copy_node_modules=1
+    local run_install=1
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --base)
+                [[ $# -ge 2 ]] || {
+                    print -r -- "gwtup: --base requires a ref" >&2
+                    return 1
+                }
+                base_ref="$2"
+                shift 2
+                ;;
+            --no-fetch)
+                fetch_origin=0
+                shift
+                ;;
+            --no-node-modules)
+                copy_node_modules=0
+                shift
+                ;;
+            --no-install)
+                run_install=0
+                shift
+                ;;
+            -h|--help)
+                print -r -- "usage: gwtup [--base <ref>] [--no-fetch] [--no-node-modules] [--no-install] <branch>"
+                return 0
+                ;;
+            -*)
+                print -r -- "gwtup: unknown option: $1" >&2
+                return 1
+                ;;
+            *)
+                [[ -z "$branch" ]] || {
+                    print -r -- "gwtup: expected one branch, got extra argument: $1" >&2
+                    return 1
+                }
+                branch="$1"
+                shift
+                ;;
+        esac
+    done
+
+    [[ -n "$branch" ]] || {
+        print -r -- "usage: gwtup [--base <ref>] [--no-fetch] [--no-node-modules] [--no-install] <branch>" >&2
+        return 1
+    }
+
+    local wt_base
+    wt_base=$(_git-wt-base) || return 1
+
+    local wt_path="$wt_base/$branch"
+    if [[ -d "$wt_path" ]]; then
+        cd "$wt_path" || return 1
+        return 0
+    fi
+
+    if [[ "$fetch_origin" = "1" ]]; then
+        print -r -- "gwtup: fetching origin"
+        git fetch origin --prune || return 1
+    fi
+
+    local current_root
+    current_root="$(git rev-parse --show-toplevel)" || return 1
+
+    local base_ref_was_explicit=1
+    if [[ -z "$base_ref" ]]; then
+        base_ref="$(_git-wt-current-branch-or-head)" || return 1
+        base_ref_was_explicit=0
+    fi
+
+    mkdir -p "$wt_base"
+
+    if git show-ref --verify --quiet "refs/heads/$branch"; then
+        print -r -- "gwtup: checking out existing local branch $branch"
+        git worktree add "$wt_path" "$branch" || return 1
+    elif git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
+        print -r -- "gwtup: checking out origin/$branch as local branch $branch"
+        git worktree add --track -b "$branch" "$wt_path" "origin/$branch" || return 1
+    else
+        print -r -- "gwtup: creating new branch $branch from $base_ref"
+        git worktree add -b "$branch" "$wt_path" "$base_ref" || return 1
+    fi
+
+    if [[ "$copy_node_modules" = "1" ]]; then
+        local source_root
+        if [[ "$base_ref_was_explicit" = "0" ]]; then
+            source_root="$current_root"
+        else
+            local source_branch
+            source_branch="$(_git-wt-local-branch-for-ref "$base_ref")"
+
+            source_root="$(_git-wt-worktree-for-branch "$source_branch" || true)"
+            if [[ -z "$source_root" ]]; then
+                source_root="$current_root"
+            fi
+        fi
+
+        _git-wt-seed-node-modules "$source_root" "$wt_path" || return 1
+    fi
+
+    if [[ "$run_install" = "1" ]]; then
+        _git-wt-install-deps "$wt_path" || return 1
+    fi
+
+    print -r -- "gwtup: ready: $wt_path"
+}
+
 # List worktrees
 gwtl () {
     git worktree list
@@ -704,6 +919,15 @@ if [[ -n "${ZSH_VERSION-}" ]]; then
         fi
     }
 
+    _git_shorthand_gwtup () {
+        _arguments \
+            '--base[base ref for new branches]:base:_git_shorthand_all_branches' \
+            '--no-fetch[skip fetching origin before resolving branches]' \
+            '--no-node-modules[skip node_modules cache seeding]' \
+            '--no-install[skip package-manager install after worktree creation]' \
+            '1:branch:_git_shorthand_all_branches'
+    }
+
     _git_shorthand_single_local_branch () {
         if (( CURRENT == 2 )); then
             _git_shorthand_local_branches
@@ -762,6 +986,7 @@ if [[ -n "${ZSH_VERSION-}" ]]; then
         compdef _git_shorthand_single_all_branches gwtco
         compdef _git_shorthand_gwtd gwtd
         compdef _git_shorthand_gwtcd gwtcd
+        compdef _git_shorthand_gwtup gwtup
 
         typeset -g _git_shorthand_completions_registered=1
     }
