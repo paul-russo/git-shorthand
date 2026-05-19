@@ -22,8 +22,10 @@ Currently, the exceptions to these rules are:
 When loaded in `zsh` with completion enabled (`compinit`), shorthand commands complete like their underlying `git` subcommands.
 
 Custom completion is also included for shorthand commands that take branch/worktree names, such as:
-- `git-obliterate`, `gwtco`, `gwtd`, `gwtcd`, `gwtup`
-- `gnb`, `gnbpp`, `gfmnb`, `gwta`, `gfmwta`, `grnb`, `gcobpp`
+- `git-obliterate`, `gwta`, `gfmwta`, `gwtco`, `gwtd`, `gwtcd`
+- `gnb`, `gnbpp`, `gfmnb`, `grnb`, `gcobpp`
+
+`gwtcd` completes against both pool slot names (`tree-1`, `tree-2`, …) and the branches currently checked out in slots; `gwtd` completes only those branches that actually sit in a slot.
 
 Branch/worktree name completion uses the same slash-aware matching as zsh’s stock `_git` completion, so names like `cursor/example-branch` complete correctly (not only one path segment at a time).
 
@@ -63,18 +65,27 @@ These commands work with either `master` or `main` branches automatically:
 - `gprm` - Fetch main and rebase current branch on it
 - `gbprune` - Fetch with prune, then force-delete local branches whose changes are fully in main (handles gone upstream, regular merge, rebase merge, equivalent patch/tree changes, and squash-merged GitHub PRs when `gh` is available); prints progress and a summary of deleted/failed branches
 - `gpbprune` - Pull, then `gbprune` (update current branch, then clean merged local branches)
+- `gwtprune` - Release pool slots whose branches are stale (detach HEAD, delete the stale branch). Slots stay in the pool with their `node_modules` intact; see [Worktree Operations](#worktree-operations) below.
 
-If you use linked worktrees under `{repo_name}-worktrees/`, run `gwtprune` before `gbprune` when cleaning up stale branches. Git will not delete a branch that is still checked out in another worktree until that checkout is removed.
+If you keep work in pool slots, run `gwtprune` before `gbprune` so stale branches aren't blocked by a slot still holding them.
 
 ## Worktree Operations
-Worktrees are stored in a `{repo_name}-worktrees/` sibling directory to keep your workspace clean. Worktree creation still creates or checks out a branch for that checkout, but `gwtd` removes only the worktree and leaves the branch in place.
+Worktrees live in a recycled **pool** under a `{repo_name}-worktrees/` sibling directory. Each slot is a long-lived checkout named `tree-1`, `tree-2`, … that keeps its own `node_modules` and build state. Activating a slot means checking a branch out into it; releasing a slot detaches HEAD so it can be reused. Install runs only when the lockfile actually changed between the previous and current HEAD, so common branch hops are nearly instant.
 
-- `gwta <branch>` - Add worktree with a new branch from main
-- `gfmwta <branch>` - Fetch main, then add worktree with a new branch from it
-- `gwtco <branch>` - Add worktree for an existing branch (e.g. a remote branch); if the worktree already exists, `cd` into it
-- `gwtup <branch>` - Fetch origin, check out an existing local or remote branch in a worktree, or create a new worktree branch from the current branch. Copies root `node_modules` from the current checkout as a cache seed and then runs the detected package-manager install. Supports `--base <ref>`, `--no-fetch`, `--no-node-modules`, and `--no-install`.
-- `gwtl` - List all worktrees
-- `gwtd <branch>` - Remove a clean worktree while preserving its branch; rejects if the branch has uncommitted changes, has no upstream or commits missing from its upstream, or is not stale by the same rules as `gbprune`
-- `gwtd --force <branch>` - Remove a worktree while preserving its branch, skipping dirty/upstream/stale safety checks
-- `gwtcd <branch>` - `cd` into a worktree by branch name (`root` goes to the primary repo worktree; `main` is a normal branch name)
-- `gwtprune` - Fetch with prune; remove `{repo}-worktrees/<branch>` checkouts whose relative path matches the checked-out branch and that branch is stale (same detection as `gbprune`, including merged GitHub PRs when `gh` is available); then `git worktree prune -v`. It limits stale checks to matching plugin-managed worktree branches before doing slower merge/GitHub detection. Prints progress and a summary of removed worktrees, deleted branches, skips, and failures. Skips the primary worktree, non-plugin paths, detached HEAD, branch/path mismatches, and the worktree you are currently in. If remove fails (for example dirty tree or submodules), use `gwtd --force <branch>` for that checkout.
+### Pool model
+- **Pool soft cap.** New slots are created on demand up to `_GIT_WT_POOL_SOFT_CAP` (default `6`). When you ask for another slot after the cap is reached, `gwta`/`gfmwta`/`gwtco` show an interactive picker that lets you (1) pick an active slot to release and reuse, (2) `g` to grow the pool past the cap, or (3) `q` to cancel.
+- **Slot states.**
+  - `idle` — detached HEAD, clean working tree. Eligible for reuse.
+  - `active` — branch checked out, clean.
+  - `dirty` — uncommitted or untracked changes. Never auto-reused.
+  - `current` — your cwd is inside the slot. Never auto-released or auto-reused.
+- **Lockfile-aware install.** Each activation compares the slot's previous HEAD against the new HEAD on the detected lockfile (`pnpm-lock.yaml` > `yarn.lock` > `package-lock.json`). If they match, the install step is skipped. Pass `--no-install` to skip unconditionally.
+
+### Commands
+- `gwta [--base <ref>] [--no-install] <branch>` — allocate a slot, create `<branch>` from `--base` (default `$(git-main-branch)`), conditionally install, and `cd` in. If `<branch>` is already in a slot, just `cd` there.
+- `gfmwta [--base <ref>] [--no-install] <branch>` — fetch `origin/$(git-main-branch)` first, then `gwta`.
+- `gwtco [--no-install] <branch>` — allocate a slot and check out an existing branch. Prefers a local branch, falls back to `origin/<branch>` (creates a tracking branch). If `<branch>` is already in a slot, just `cd` there.
+- `gwtcd <fuzzy>` — `cd` into a slot by substring match against slot directory names (`tree-3`) **and** branches currently in slots. `root` always routes to the primary repo. Ambiguous matches print the candidate list and fail; no match prints what is available and fails.
+- `gwtl` — print the pool as a table sorted by slot mtime descending. Columns: `BRANCH | STATE | LAST MODIFIED | PATH`. The primary repo is pinned at the top with `(main repo)` in the STATE column.
+- `gwtd [--delete-branch] [--force] <branch>` — release the slot that currently holds `<branch>`: detach HEAD, optionally also delete the branch. Refuses dirty without `--force`. Always refuses the current slot (cd elsewhere first).
+- `gwtprune` — fetch with prune, then release every pool slot whose branch is stale by the same rules as `gbprune` (detach HEAD and delete the stale branch). Slots stay in the pool. Skips dirty and current slots. Finishes with `git worktree prune -v`.

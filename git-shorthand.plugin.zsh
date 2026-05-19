@@ -94,8 +94,20 @@ gfmnb () {
 }
 
 # Worktree operations
-# Worktrees are stored in ../{repo_name}-worktrees/ to keep src/ clean.
-# Worktrees and branches are managed together (1-to-1 lifecycle).
+# Worktrees live in a recycled pool under ../{repo_name}-worktrees/tree-N.
+# Each slot keeps its own node_modules. Activating a slot checks out a branch
+# into it; install only runs when the lockfile actually changed.
+#
+# Slot states (mutually exclusive; current wins over the rest, dirty wins over
+# active/idle):
+#   idle    - detached HEAD, clean working tree (eligible for reuse).
+#   active  - branch checked out, clean.
+#   dirty   - uncommitted or untracked changes (never auto-reused).
+#   current - cwd is inside the slot (never auto-released or auto-reused).
+#
+# The soft cap is the point at which gwta/gfmwta/gwtco will stop lazily
+# creating new slots and instead prompt the user to release one or grow.
+typeset -g _GIT_WT_POOL_SOFT_CAP=6
 
 # Helper: resolve the main worktree directory for the current repo.
 _git-main-worktree () {
@@ -134,94 +146,23 @@ _git-wt-base () {
     _git-wt-base-from-main "$main_wt"
 }
 
-# Add worktree with a new branch from main
-gwta () {
-    local wt_base
-    wt_base=$(_git-wt-base)
-    mkdir -p "$wt_base"
-    git worktree add -b "$1" "$wt_base/$1" "$(git-main-branch)"
-}
-
-# Fetch main, then add worktree with a new branch from it
-gfmwta () {
-    git fetch origin "$(git-main-branch):$(git-main-branch)"
-    local wt_base
-    wt_base=$(_git-wt-base)
-    mkdir -p "$wt_base"
-    git worktree add -b "$1" "$wt_base/$1" "$(git-main-branch)"
-}
-
-# Add worktree for an existing branch (e.g. a remote branch)
-gwtco () {
-    local wt_base
-    wt_base=$(_git-wt-base)
-    local wt_path="$wt_base/$1"
-
-    if [[ -d "$wt_path" ]]; then
-        cd "$wt_path" || return 1
-        return 0
-    fi
-
-    mkdir -p "$wt_base"
-    git worktree add "$wt_path" "$1"
-}
-
-# Helper: map refs like origin/main or refs/heads/main to the branch name stored in worktree metadata.
-_git-wt-local-branch-for-ref () {
-    local ref="$1"
-
-    case "$ref" in
-        refs/heads/*)
-            print -r -- "${ref#refs/heads/}"
-            ;;
-        origin/*)
-            print -r -- "${ref#origin/}"
-            ;;
-        *)
-            print -r -- "$ref"
-            ;;
-    esac
-}
-
-# Helper: find the checked-out worktree for a branch, which lets cache seeding prefer the base checkout.
-_git-wt-worktree-for-branch () {
-    local branch="$1"
-
-    git worktree list --porcelain | awk -v branch="refs/heads/$branch" '
-        /^worktree / { path = substr($0, 10) }
-        $0 == "branch " branch { print path; found = 1; exit }
-        END { if (!found) exit 1 }
-    '
-}
-
-# Helper: use the current branch as a default base, while still supporting detached HEAD.
-_git-wt-current-branch-or-head () {
-    local branch
-
-    branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null)" || {
-        print -r -- "HEAD"
-        return 0
-    }
-
-    print -r -- "$branch"
-}
-
-# Helper: copy root node_modules as a warm cache; package-manager install still repairs the result.
+# Helper: copy root node_modules as a warm cache; package-manager install still
+# repairs the result. Used by _git-wt-grow-pool to warm freshly created slots.
 _git-wt-seed-node-modules () {
     local source_root="$1"
     local target_root="$2"
 
     if [[ ! -d "$source_root/node_modules" ]]; then
-        print -r -- "gwtup: no node_modules found at $source_root; skipping cache seed"
+        print -r -- "gwtpool: no node_modules found at $source_root; skipping cache seed" >&2
         return 0
     fi
 
     if [[ -e "$target_root/node_modules" ]]; then
-        print -r -- "gwtup: node_modules already exists in target; skipping cache seed"
+        print -r -- "gwtpool: node_modules already exists in target; skipping cache seed" >&2
         return 0
     fi
 
-    print -r -- "gwtup: copying node_modules from $source_root"
+    print -r -- "gwtpool: copying node_modules from $source_root" >&2
     mkdir -p "$target_root/node_modules"
     rsync -a "$source_root/node_modules/" "$target_root/node_modules/"
 }
@@ -236,78 +177,434 @@ _git-wt-run-with-optional-mise () {
     "$@"
 }
 
+# Helper: detect the lockfile path (relative to slot) for lockfile-aware install.
+# Priority mirrors _git-wt-install-deps: pnpm > yarn > npm.
+_git-wt-detect-lockfile () {
+    local slot="$1"
+
+    if [[ -f "$slot/pnpm-lock.yaml" ]]; then
+        print -r -- "pnpm-lock.yaml"
+        return 0
+    fi
+    if [[ -f "$slot/yarn.lock" ]]; then
+        print -r -- "yarn.lock"
+        return 0
+    fi
+    if [[ -f "$slot/package-lock.json" ]]; then
+        print -r -- "package-lock.json"
+        return 0
+    fi
+    return 1
+}
+
 # Helper: run the detected package manager so seeded dependencies match the target lockfile.
 _git-wt-install-deps () {
     local target_root="$1"
 
     if [[ -f "$target_root/pnpm-lock.yaml" ]]; then
-        print -r -- "gwtup: running pnpm install --prefer-offline"
+        print -r -- "gwtpool: running pnpm install --prefer-offline"
         (cd "$target_root" && _git-wt-run-with-optional-mise pnpm install --prefer-offline)
         return
     fi
 
     if [[ -f "$target_root/yarn.lock" ]]; then
-        print -r -- "gwtup: running yarn install"
+        print -r -- "gwtpool: running yarn install"
         (cd "$target_root" && _git-wt-run-with-optional-mise yarn install)
         return
     fi
 
     if [[ -f "$target_root/package-lock.json" ]]; then
-        print -r -- "gwtup: running npm ci --prefer-offline"
+        print -r -- "gwtpool: running npm ci --prefer-offline"
         (cd "$target_root" && _git-wt-run-with-optional-mise npm ci --prefer-offline)
         return
     fi
 
     if [[ -f "$target_root/package.json" ]]; then
-        print -r -- "gwtup: running npm install --prefer-offline"
+        print -r -- "gwtpool: running npm install --prefer-offline"
         (cd "$target_root" && _git-wt-run-with-optional-mise npm install --prefer-offline)
         return
     fi
 
-    print -r -- "gwtup: no package manifest found; skipping install"
+    print -r -- "gwtpool: no package manifest found; skipping install"
 }
 
-# Bring up a worktree by checking out an existing branch or creating a new one from the current branch.
-gwtup () {
-    local base_ref=""
-    local branch=""
-    local fetch_origin=1
-    local copy_node_modules=1
+# Helper: returns 0 when the slot's lockfile matches between old_head and current HEAD;
+# returns 1 in every other case (no old HEAD, no lockfile, contents differ). Callers use
+# this to decide whether to skip an install.
+_git-wt-lockfile-unchanged () {
+    local slot="$1"
+    local old_head="$2"
+
+    [[ -n "$old_head" ]] || return 1
+
+    local lockfile
+    lockfile=$(_git-wt-detect-lockfile "$slot") || return 1
+
+    git -C "$slot" diff --quiet "$old_head" HEAD -- "$lockfile" 2>/dev/null
+}
+
+# Helper: emit pool slot paths matching tree-<int>, sorted by N ascending.
+# sort -V handles tree-1, tree-2, ..., tree-10 in natural order. The directory
+# glob is broad on purpose (tree-*); the regex filter limits to numeric suffixes
+# (zsh's <-> glob would be tighter, but shellcheck-as-bash can't parse it).
+_git-wt-pool-slots () {
+    local wt_base
+    wt_base=$(_git-wt-base) || return 1
+    [[ -d "$wt_base" ]] || return 0
+
+    setopt local_options extended_glob no_nomatch
+    local -a slots
+    local entry name
+    for entry in "$wt_base"/tree-*(N/); do
+        name="${entry:t}"
+        [[ "$name" =~ ^tree-[0-9]+$ ]] || continue
+        slots+=("$entry")
+    done
+    (( ${#slots} )) || return 0
+
+    printf '%s\n' "${slots[@]}" | sort -V
+}
+
+# Helper: branch name checked out in a slot, empty when detached.
+_git-wt-slot-branch () {
+    local slot="$1"
+    [[ -d "$slot" ]] || return 1
+
+    git -C "$slot" symbolic-ref --quiet --short HEAD 2>/dev/null
+}
+
+# Helper: mtime of a slot path. Used by _git-wt-pick-idle-slot for "oldest first"
+# and by gwtl for sort-by-recency.
+_git-wt-slot-mtime () {
+    local slot="$1"
+    [[ -d "$slot" ]] || return 1
+
+    # BSD stat (macOS) first, then GNU stat fallback (Linux).
+    if stat -f '%m' "$slot" 2>/dev/null; then
+        return
+    fi
+    stat -c '%Y' "$slot" 2>/dev/null
+}
+
+# Helper: classify a slot. Returns one of idle/active/dirty/current.
+# Precedence: current beats everything (we never auto-release or auto-reuse the
+# slot we are in); dirty beats active/idle (an uncommitted slot is never safe
+# to reuse).
+_git-wt-slot-state () {
+    local slot="$1"
+    [[ -d "$slot" ]] || return 1
+
+    local repo_root
+    repo_root=$(git rev-parse --show-toplevel 2>/dev/null)
+    if [[ -n "$repo_root" && "$repo_root" == "$slot" ]]; then
+        print -r -- "current"
+        return
+    fi
+
+    local status_out
+    status_out=$(git -C "$slot" status --porcelain 2>/dev/null) || return 1
+    if [[ -n "$status_out" ]]; then
+        print -r -- "dirty"
+        return
+    fi
+
+    local branch
+    branch=$(_git-wt-slot-branch "$slot")
+    if [[ -n "$branch" ]]; then
+        print -r -- "active"
+    else
+        print -r -- "idle"
+    fi
+}
+
+# Helper: find a slot that already has the given branch checked out.
+_git-wt-find-slot-by-branch () {
+    local target_branch="$1"
+    [[ -n "$target_branch" ]] || return 1
+
+    local slot branch
+    for slot in "${(@f)$(_git-wt-pool-slots)}"; do
+        [[ -z "$slot" ]] && continue
+        branch=$(_git-wt-slot-branch "$slot")
+        if [[ "$branch" == "$target_branch" ]]; then
+            print -r -- "$slot"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Helper: pick the oldest idle slot by mtime, or fail when none exist.
+_git-wt-pick-idle-slot () {
+    local oldest_mtime="" oldest_slot=""
+    local slot mtime state
+    for slot in "${(@f)$(_git-wt-pool-slots)}"; do
+        [[ -z "$slot" ]] && continue
+        state=$(_git-wt-slot-state "$slot")
+        [[ "$state" == "idle" ]] || continue
+
+        mtime=$(_git-wt-slot-mtime "$slot")
+        if [[ -z "$oldest_mtime" || "$mtime" -lt "$oldest_mtime" ]]; then
+            oldest_mtime="$mtime"
+            oldest_slot="$slot"
+        fi
+    done
+
+    [[ -n "$oldest_slot" ]] || return 1
+    print -r -- "$oldest_slot"
+}
+
+# Helper: create the next tree-N slot from current HEAD and seed node_modules
+# from the primary worktree. Prints the new slot path on success (UI on stderr).
+_git-wt-grow-pool () {
+    local wt_base
+    wt_base=$(_git-wt-base) || return 1
+    mkdir -p "$wt_base"
+
+    local -a slots
+    slots=("${(@f)$(_git-wt-pool-slots)}")
+
+    local max_n=0 slot name num
+    for slot in "${slots[@]}"; do
+        [[ -z "$slot" ]] && continue
+        name="${slot:t}"
+        num="${name#tree-}"
+        if (( num > max_n )); then
+            max_n=$num
+        fi
+    done
+
+    local next_n=$(( max_n + 1 ))
+    local new_slot="$wt_base/tree-$next_n"
+
+    print -r -- "gwtpool: creating $new_slot" >&2
+    git worktree add --detach "$new_slot" HEAD >&2 || return 1
+
+    local main_wt
+    main_wt=$(_git-main-worktree)
+    if [[ -n "$main_wt" && "$main_wt" != "$new_slot" ]]; then
+        _git-wt-seed-node-modules "$main_wt" "$new_slot" || return 1
+    fi
+
+    print -r -- "$new_slot"
+}
+
+# Helper: interactive picker shown when the pool is full. Lists active/dirty/current
+# slots with branch and marker, plus "g" to grow and "q" to cancel. Emits the chosen
+# slot path, "grow", or "cancel" on stdout; UI lines go to stderr so callers can
+# capture the choice cleanly.
+_git-wt-prompt-full-pool () {
+    local -a active_slots active_branches active_states
+    local slot branch state
+    for slot in "${(@f)$(_git-wt-pool-slots)}"; do
+        [[ -z "$slot" ]] && continue
+        state=$(_git-wt-slot-state "$slot")
+        # Idle slots wouldn't have brought us here; show everything else.
+        [[ "$state" == "active" || "$state" == "dirty" || "$state" == "current" ]] || continue
+        active_slots+=("$slot")
+        active_branches+=("$(_git-wt-slot-branch "$slot")")
+        active_states+=("$state")
+    done
+
+    if (( ${#active_slots} == 0 )); then
+        return 1
+    fi
+
+    print -r -- "gwtpool: pool is full (${#active_slots} active slot(s)):" >&2
+
+    local i name marker
+    for (( i=1; i<=${#active_slots}; i++ )); do
+        slot="${active_slots[$i]}"
+        branch="${active_branches[$i]}"
+        state="${active_states[$i]}"
+        name="${slot:t}"
+        marker=""
+        [[ "$state" == "dirty" ]] && marker=" (dirty)"
+        [[ "$state" == "current" ]] && marker=" (current)"
+        print -r -- "  $i. $name [${branch:-<detached>}]${marker}" >&2
+    done
+    print -r -- "  g. grow pool (create a new slot)" >&2
+    print -r -- "  q. cancel" >&2
+
+    print -n -- "Choice: " >&2
+    local choice
+    read -r choice
+
+    case "$choice" in
+        g|G)
+            print -r -- "grow"
+            ;;
+        q|Q|"")
+            print -r -- "cancel"
+            ;;
+        *)
+            # Numeric choice picks a slot; anything else cancels.
+            if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= ${#active_slots} )); then
+                print -r -- "${active_slots[$choice]}"
+            else
+                print -r -- "cancel"
+            fi
+            ;;
+    esac
+}
+
+# Helper: release a slot back into the pool. Detaches HEAD so the slot is idle
+# again. Guards against releasing the current slot or a dirty slot (--force
+# overrides dirty but not current). Optionally also deletes the branch that was
+# checked out.
+_git-wt-release-slot () {
+    local slot=""
+    local delete_branch=0 force=0
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --delete-branch)
+                delete_branch=1
+                shift
+                ;;
+            --force)
+                force=1
+                shift
+                ;;
+            *)
+                [[ -z "$slot" ]] || {
+                    print -r -- "gwtpool: extra argument: $1" >&2
+                    return 1
+                }
+                slot="$1"
+                shift
+                ;;
+        esac
+    done
+
+    [[ -n "$slot" && -d "$slot" ]] || {
+        print -r -- "gwtpool: invalid slot: $slot" >&2
+        return 1
+    }
+
+    local state
+    state=$(_git-wt-slot-state "$slot") || return 1
+
+    if [[ "$state" == "current" ]]; then
+        print -r -- "gwtpool: refusing to release current slot ($slot); cd elsewhere first" >&2
+        return 1
+    fi
+
+    if [[ "$state" == "dirty" && $force -eq 0 ]]; then
+        print -r -- "gwtpool: $slot has uncommitted changes; commit/stash first, or use --force" >&2
+        return 1
+    fi
+
+    local branch
+    branch=$(_git-wt-slot-branch "$slot")
+
+    if [[ -n "$branch" ]]; then
+        print -r -- "gwtpool: detaching HEAD in $slot (was $branch)"
+        git -C "$slot" checkout --detach HEAD || return 1
+    fi
+
+    if (( delete_branch )) && [[ -n "$branch" ]]; then
+        print -r -- "gwtpool: deleting branch $branch"
+        git branch -D "$branch" || return 1
+    fi
+}
+
+# Helper: allocate a slot for a new activation. Prefers the oldest idle slot,
+# lazily grows the pool up to _GIT_WT_POOL_SOFT_CAP, then falls back to the
+# interactive picker when the pool is full. Prints the chosen slot path on stdout.
+#
+# Callers must check _git-wt-find-slot-by-branch first; this helper assumes the
+# requested branch is NOT already in a slot.
+_git-wt-allocate-slot () {
+    local slot
+    if slot=$(_git-wt-pick-idle-slot); then
+        print -r -- "$slot"
+        return 0
+    fi
+
+    local -a slots
+    slots=("${(@f)$(_git-wt-pool-slots)}")
+
+    local count=0 s
+    for s in "${slots[@]}"; do
+        [[ -n "$s" ]] && (( count++ ))
+    done
+
+    if (( count < _GIT_WT_POOL_SOFT_CAP )); then
+        _git-wt-grow-pool || return 1
+        return 0
+    fi
+
+    local choice
+    choice=$(_git-wt-prompt-full-pool) || return 1
+    case "$choice" in
+        grow)
+            _git-wt-grow-pool || return 1
+            ;;
+        cancel|"")
+            print -r -- "gwtpool: cancelled" >&2
+            return 1
+            ;;
+        *)
+            _git-wt-release-slot "$choice" >&2 || return 1
+            print -r -- "$choice"
+            ;;
+    esac
+}
+
+# Helper: perform the checkout-and-conditional-install dance inside a slot.
+# Captures the slot's HEAD before checkout so the post-checkout lockfile diff
+# can decide whether to skip install. Remaining args after run_install are the
+# git command to run inside the slot (e.g. checkout -b feature main).
+_git-wt-activate-slot () {
+    local slot="$1"
+    local run_install="$2"
+    shift 2
+
+    local old_head
+    old_head=$(git -C "$slot" rev-parse HEAD 2>/dev/null)
+
+    git -C "$slot" "$@" || return 1
+
+    if (( run_install )); then
+        if _git-wt-lockfile-unchanged "$slot" "$old_head"; then
+            print -r -- "gwtpool: lockfile unchanged, skipping install"
+        else
+            _git-wt-install-deps "$slot" || return 1
+        fi
+    fi
+}
+
+# Allocate a slot and create a new branch in it from main (or --base).
+gwta () {
+    local base_ref="" branch=""
     local run_install=1
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --base)
                 [[ $# -ge 2 ]] || {
-                    print -r -- "gwtup: --base requires a ref" >&2
+                    print -r -- "gwta: --base requires a ref" >&2
                     return 1
                 }
                 base_ref="$2"
                 shift 2
-                ;;
-            --no-fetch)
-                fetch_origin=0
-                shift
-                ;;
-            --no-node-modules)
-                copy_node_modules=0
-                shift
                 ;;
             --no-install)
                 run_install=0
                 shift
                 ;;
             -h|--help)
-                print -r -- "usage: gwtup [--base <ref>] [--no-fetch] [--no-node-modules] [--no-install] <branch>"
+                print -r -- "usage: gwta [--base <ref>] [--no-install] <branch>"
                 return 0
                 ;;
             -*)
-                print -r -- "gwtup: unknown option: $1" >&2
+                print -r -- "gwta: unknown option: $1" >&2
                 return 1
                 ;;
             *)
                 [[ -z "$branch" ]] || {
-                    print -r -- "gwtup: expected one branch, got extra argument: $1" >&2
+                    print -r -- "gwta: expected one branch, got extra argument: $1" >&2
                     return 1
                 }
                 branch="$1"
@@ -317,88 +614,268 @@ gwtup () {
     done
 
     [[ -n "$branch" ]] || {
-        print -r -- "usage: gwtup [--base <ref>] [--no-fetch] [--no-node-modules] [--no-install] <branch>" >&2
+        print -r -- "usage: gwta [--base <ref>] [--no-install] <branch>" >&2
         return 1
     }
 
-    local wt_base
-    wt_base=$(_git-wt-base) || return 1
+    [[ -n "$base_ref" ]] || base_ref="$(git-main-branch)"
 
-    local wt_path="$wt_base/$branch"
-    if [[ -d "$wt_path" ]]; then
-        cd "$wt_path" || return 1
+    local slot
+    if slot=$(_git-wt-find-slot-by-branch "$branch"); then
+        print -r -- "gwta: branch $branch already in $slot"
+        cd "$slot" || return 1
         return 0
     fi
 
-    if [[ "$fetch_origin" = "1" ]]; then
-        print -r -- "gwtup: fetching origin"
-        git fetch origin --prune || return 1
+    slot=$(_git-wt-allocate-slot) || return 1
+
+    print -r -- "gwta: activating $slot with new branch $branch from $base_ref"
+    _git-wt-activate-slot "$slot" "$run_install" checkout -b "$branch" "$base_ref" || return 1
+
+    cd "$slot" || return 1
+    print -r -- "gwta: ready: $slot"
+}
+
+# Fetch main, then gwta. Flags forward straight through.
+gfmwta () {
+    git fetch origin "$(git-main-branch):$(git-main-branch)" || return 1
+    gwta "$@"
+}
+
+# Allocate a slot and check out an existing branch (local first, else origin/<branch>).
+gwtco () {
+    local branch=""
+    local run_install=1
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --no-install)
+                run_install=0
+                shift
+                ;;
+            -h|--help)
+                print -r -- "usage: gwtco [--no-install] <branch>"
+                return 0
+                ;;
+            -*)
+                print -r -- "gwtco: unknown option: $1" >&2
+                return 1
+                ;;
+            *)
+                [[ -z "$branch" ]] || {
+                    print -r -- "gwtco: expected one branch, got extra argument: $1" >&2
+                    return 1
+                }
+                branch="$1"
+                shift
+                ;;
+        esac
+    done
+
+    [[ -n "$branch" ]] || {
+        print -r -- "usage: gwtco [--no-install] <branch>" >&2
+        return 1
+    }
+
+    local slot
+    if slot=$(_git-wt-find-slot-by-branch "$branch"); then
+        print -r -- "gwtco: branch $branch already in $slot"
+        cd "$slot" || return 1
+        return 0
     fi
 
-    local current_root
-    current_root="$(git rev-parse --show-toplevel)" || return 1
-
-    local base_ref_was_explicit=1
-    if [[ -z "$base_ref" ]]; then
-        base_ref="$(_git-wt-current-branch-or-head)" || return 1
-        base_ref_was_explicit=0
-    fi
-
-    mkdir -p "$wt_base"
+    slot=$(_git-wt-allocate-slot) || return 1
 
     if git show-ref --verify --quiet "refs/heads/$branch"; then
-        print -r -- "gwtup: checking out existing local branch $branch"
-        git worktree add "$wt_path" "$branch" || return 1
+        print -r -- "gwtco: activating $slot with local branch $branch"
+        _git-wt-activate-slot "$slot" "$run_install" checkout "$branch" || return 1
     elif git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-        print -r -- "gwtup: checking out origin/$branch as local branch $branch"
-        git worktree add --track -b "$branch" "$wt_path" "origin/$branch" || return 1
+        print -r -- "gwtco: activating $slot with origin/$branch as local branch $branch"
+        _git-wt-activate-slot "$slot" "$run_install" checkout --track -b "$branch" "origin/$branch" || return 1
     else
-        print -r -- "gwtup: creating new branch $branch from $base_ref"
-        git worktree add -b "$branch" "$wt_path" "$base_ref" || return 1
+        print -r -- "gwtco: no local or origin/$branch ref found" >&2
+        return 1
     fi
 
-    if [[ "$copy_node_modules" = "1" ]]; then
-        local source_root
-        if [[ "$base_ref_was_explicit" = "0" ]]; then
-            source_root="$current_root"
-        else
-            local source_branch
-            source_branch="$(_git-wt-local-branch-for-ref "$base_ref")"
-
-            source_root="$(_git-wt-worktree-for-branch "$source_branch" || true)"
-            if [[ -z "$source_root" ]]; then
-                source_root="$current_root"
-            fi
-        fi
-
-        _git-wt-seed-node-modules "$source_root" "$wt_path" || return 1
-    fi
-
-    if [[ "$run_install" = "1" ]]; then
-        _git-wt-install-deps "$wt_path" || return 1
-    fi
-
-    print -r -- "gwtup: ready: $wt_path"
+    cd "$slot" || return 1
+    print -r -- "gwtco: ready: $slot"
 }
 
-# List worktrees
-gwtl () {
-    git worktree list
-}
-
-# cd into a worktree by branch name (use "root" for the primary checkout; branch "main" is a normal name).
+# cd into a slot by fuzzy substring match against slot directory names AND branch
+# names. "root" still routes to the primary worktree. Ambiguous matches print the
+# candidate list and fail; no match prints what's available and fails.
 gwtcd () {
-    local target_branch="$1"
+    local query="$1"
+    [[ -n "$query" ]] || {
+        print -r -- "usage: gwtcd <fuzzy>" >&2
+        return 2
+    }
 
-    if [[ "$target_branch" == "root" ]]; then
+    if [[ "$query" == "root" ]]; then
         local main_wt
         main_wt=$(_git-main-worktree) || return 1
         cd "$main_wt" || return 1
-    else
-        local wt_base
-        wt_base=$(_git-wt-base) || return 1
-        cd "$wt_base/$target_branch" || return 1
+        return 0
     fi
+
+    local -a slot_paths slot_names slot_branches
+    local slot
+    for slot in "${(@f)$(_git-wt-pool-slots)}"; do
+        [[ -z "$slot" ]] && continue
+        slot_paths+=("$slot")
+        slot_names+=("${slot:t}")
+        slot_branches+=("$(_git-wt-slot-branch "$slot")")
+    done
+
+    if (( ${#slot_paths} == 0 )); then
+        print -r -- "gwtcd: no slots exist; create one with gwta/gwtco" >&2
+        return 1
+    fi
+
+    local -a match_paths match_descs
+    local -A seen
+    local i name branch display
+    for (( i=1; i<=${#slot_paths}; i++ )); do
+        slot="${slot_paths[$i]}"
+        name="${slot_names[$i]}"
+        branch="${slot_branches[$i]}"
+        display="$name${branch:+ ($branch)}"
+
+        if [[ "$name" == *"$query"* ]] || [[ -n "$branch" && "$branch" == *"$query"* ]]; then
+            if (( ! ${+seen[$slot]} )); then
+                seen[$slot]=1
+                match_paths+=("$slot")
+                match_descs+=("$display")
+            fi
+        fi
+    done
+
+    if (( ${#match_paths} == 0 )); then
+        print -r -- "gwtcd: no slot matching '$query'" >&2
+        print -r -- "available:" >&2
+        for (( i=1; i<=${#slot_paths}; i++ )); do
+            name="${slot_names[$i]}"
+            branch="${slot_branches[$i]}"
+            print -r -- "  $name${branch:+ ($branch)}" >&2
+        done
+        return 1
+    fi
+
+    if (( ${#match_paths} > 1 )); then
+        print -r -- "gwtcd: ambiguous match for '$query':" >&2
+        for display in "${match_descs[@]}"; do
+            print -r -- "  $display" >&2
+        done
+        return 1
+    fi
+
+    cd "${match_paths[1]}" || return 1
+}
+
+# List the pool: main repo row, then slots sorted by mtime descending. Columns
+# are BRANCH | STATE | LAST MODIFIED | PATH.
+gwtl () {
+    local main_wt
+    main_wt=$(_git-main-worktree) || return 1
+
+    printf '%-30s %-10s %-15s %s\n' "BRANCH" "STATE" "LAST MODIFIED" "PATH"
+
+    local main_branch
+    main_branch=$(git -C "$main_wt" symbolic-ref --quiet --short HEAD 2>/dev/null) || main_branch="<detached>"
+    printf '%-30s %-10s %-15s %s\n' "$main_branch" "(main repo)" "" "$main_wt"
+
+    local slot branch state mtime
+    local now
+    now=$(date +%s)
+    local -a sortable
+    for slot in "${(@f)$(_git-wt-pool-slots)}"; do
+        [[ -z "$slot" ]] && continue
+        branch=$(_git-wt-slot-branch "$slot")
+        [[ -z "$branch" ]] && branch="<detached>"
+        state=$(_git-wt-slot-state "$slot")
+        mtime=$(_git-wt-slot-mtime "$slot")
+        [[ -z "$mtime" ]] && mtime=0
+        sortable+=("$mtime"$'\t'"$branch"$'\t'"$state"$'\t'"$slot")
+    done
+
+    (( ${#sortable} > 0 )) || return 0
+
+    local line age delta rest path
+    for line in "${(@On)sortable}"; do
+        mtime="${line%%$'\t'*}"
+        rest="${line#*$'\t'}"
+        branch="${rest%%$'\t'*}"
+        rest="${rest#*$'\t'}"
+        state="${rest%%$'\t'*}"
+        rest="${rest#*$'\t'}"
+        path="$rest"
+
+        delta=$((now - mtime))
+        if (( delta < 60 )); then
+            age="${delta}s ago"
+        elif (( delta < 3600 )); then
+            age="$((delta/60))m ago"
+        elif (( delta < 86400 )); then
+            age="$((delta/3600))h ago"
+        else
+            age="$((delta/86400))d ago"
+        fi
+
+        printf '%-30s %-10s %-15s %s\n' "$branch" "$state" "$age" "$path"
+    done
+}
+
+# Release the slot holding <branch> back into the pool: detach HEAD, optionally
+# delete the branch. Refuses current slot always; refuses dirty without --force.
+gwtd () {
+    local delete_branch=0 force=0 branch=""
+
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --delete-branch)
+                delete_branch=1
+                shift
+                ;;
+            --force)
+                force=1
+                shift
+                ;;
+            -h|--help)
+                print -r -- "usage: gwtd [--delete-branch] [--force] <branch>"
+                return 0
+                ;;
+            -*)
+                print -r -- "gwtd: unknown option: $1" >&2
+                return 1
+                ;;
+            *)
+                [[ -z "$branch" ]] || {
+                    print -r -- "gwtd: extra argument: $1" >&2
+                    return 1
+                }
+                branch="$1"
+                shift
+                ;;
+        esac
+    done
+
+    [[ -n "$branch" ]] || {
+        print -r -- "usage: gwtd [--delete-branch] [--force] <branch>" >&2
+        return 2
+    }
+
+    local slot
+    slot=$(_git-wt-find-slot-by-branch "$branch") || {
+        print -r -- "gwtd: no slot has branch $branch checked out" >&2
+        return 1
+    }
+
+    local -a release_args
+    release_args=("$slot")
+    (( delete_branch )) && release_args+=(--delete-branch)
+    (( force )) && release_args+=(--force)
+
+    _git-wt-release-slot "${release_args[@]}"
 }
 
 # Helper: list local branch names without invoking the human-oriented `git branch` formatter.
@@ -554,108 +1031,6 @@ _git-local-branch-is-stale () {
     return 1
 }
 
-# Helper: returns success when the branch has an upstream containing all local commits.
-_git-local-branch-is-fully-upstreamed () {
-    local branch="$1"
-    local upstream
-    upstream=$(git rev-parse --abbrev-ref "$branch@{upstream}" 2>/dev/null) || return 1
-
-    git merge-base --is-ancestor "$branch" "$upstream" 2>/dev/null
-}
-
-# Helper: returns success when the branch's configured upstream has been pruned away.
-_git-local-branch-has-gone-upstream () {
-    local target_branch="$1"
-    local branch track
-
-    while IFS=$'\t' read -r branch track; do
-        [[ "$branch" == "$target_branch" && "$track" == "[gone]" ]] && return 0
-    done < <(git for-each-ref --format=$'%(refname:short)\t%(upstream:track)' refs/heads 2>/dev/null)
-
-    return 1
-}
-
-# Helper: remove a plugin-managed worktree directory and prune Git's stale metadata.
-_git-remove-worktree-directory () {
-    local wt_path="$1"
-    local wt_base="$2"
-
-    if [[ -z "$wt_path" || -z "$wt_base" || "$wt_path" == "$wt_base" || "$wt_path" != "$wt_base"/* ]]; then
-        print -r -- "gwtd: refusing to remove unsafe worktree path: $wt_path" >&2
-        return 1
-    fi
-
-    rm -rf -- "$wt_path" || return 1
-    git worktree prune -v
-}
-
-# Remove a worktree checkout without deleting its branch.
-# Without --force, the worktree must be clean and the branch must be safely stale.
-gwtd () {
-    local branch branch_force
-    if [[ "$1" == "--force" ]]; then
-        branch="$2"
-        branch_force=1
-    else
-        branch="$1"
-        branch_force=0
-    fi
-
-    if [[ -z "$branch" ]]; then
-        print -r -- "usage: gwtd [--force] <branch>" >&2
-        return 2
-    fi
-
-    if ! git check-ref-format --branch "$branch" >/dev/null 2>&1; then
-        print -r -- "gwtd: invalid branch name: $branch" >&2
-        return 1
-    fi
-
-    local wt_base
-    wt_base=$(_git-wt-base) || return 1
-
-    local wt_path="$wt_base/$branch"
-    if [[ ! -d "$wt_path" ]]; then
-        print -r -- "gwtd: worktree not found: $wt_path" >&2
-        return 1
-    fi
-
-    local repo_root
-    repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || return 1
-    if [[ "$repo_root" == "$wt_path" ]]; then
-        print -r -- "gwtd: refusing to remove the current worktree; cd elsewhere first" >&2
-        return 1
-    fi
-
-    local wt_branch
-    wt_branch=$(git -C "$wt_path" rev-parse --abbrev-ref HEAD 2>/dev/null) || return 1
-    if [[ "$wt_branch" != "$branch" ]]; then
-        print -r -- "gwtd: $wt_path is checked out as $wt_branch, not $branch" >&2
-        return 1
-    fi
-
-    if (( ! branch_force )); then
-        if [[ -n "$(git -C "$wt_path" status --porcelain 2>/dev/null)" ]]; then
-            print -r -- "gwtd: worktree has uncommitted changes; commit or stash first, or use gwtd --force" >&2
-            return 1
-        fi
-
-        git fetch --prune || return 1
-
-        if ! _git-local-branch-is-fully-upstreamed "$branch" && ! _git-local-branch-has-gone-upstream "$branch"; then
-            print -r -- "gwtd: branch is not fully upstreamed; push first, or use gwtd --force" >&2
-            return 1
-        fi
-
-        if ! _git-local-branch-is-stale "$branch"; then
-            print -r -- "gwtd: branch is not stale relative to origin/$(git-main-branch); merge it first, or use gwtd --force" >&2
-            return 1
-        fi
-    fi
-
-    _git-remove-worktree-directory "$wt_path" "$wt_base"
-}
-
 # Prune local branches that have been fully merged into main (by any method).
 # Handles: upstream gone, regular merge, squash merge, rebase merge.
 gbprune () {
@@ -686,146 +1061,61 @@ gpbprune () {
     git pull && gbprune
 }
 
-# Remove linked worktrees under the plugin layout ({repo}-worktrees/<branch>) when the path
-# matches the checked-out branch and that branch is stale (same rules as gbprune). Skips the
-# primary worktree, detached HEAD, mismatched path/branch, and the worktree you are in. Finishes
-# with git worktree prune for leftover administrative cruft.
+# For every pool slot whose checked-out branch is stale (same rules as gbprune),
+# release it: detach HEAD and delete the branch. The slot stays in the pool with
+# its node_modules intact. Skips dirty and current slots (you can release those
+# manually with `gwtd --force` and/or `gwtd --delete-branch`). Always finishes
+# with `git worktree prune -v` to clean up administrative cruft.
 gwtprune () {
     print -r -- "gwtprune: fetching remotes with prune..."
     git fetch --prune || return 1
 
-    local removed_worktrees=0 deleted_branches=0 skipped_current=0 failed_worktrees=0 failed_branches=0
-    # Keep the cleanup summary consistent across normal completion and setup failures.
-    print_summary () {
-        print -r -- "gwtprune: removed $removed_worktrees worktree(s), deleted $deleted_branches branch(es), skipped $skipped_current current worktree(s), failed $failed_worktrees worktree removal(s), failed $failed_branches branch deletion(s)"
-    }
+    local -a slot_paths slot_branches
+    local slot branch state
+    for slot in "${(@f)$(_git-wt-pool-slots)}"; do
+        [[ -z "$slot" ]] && continue
+        branch=$(_git-wt-slot-branch "$slot")
+        [[ -z "$branch" ]] && continue
 
-    local porcelain main_wt wt_base repo_root
-    # One `git worktree list --porcelain` for main path, wt_base, and parsing (not separate calls).
-    porcelain=$(git worktree list --porcelain) || {
-        print_summary
-        return 1
-    }
-
-    main_wt=$(print -r -- "$porcelain" | sed -n 's/^worktree //p' | head -1)
-    if [[ -z "$main_wt" ]]; then
-        print_summary
-        return 1
-    fi
-
-    wt_base=$(_git-wt-base-from-main "$main_wt") || {
-        print_summary
-        return 1
-    }
-
-    repo_root=$(git rev-parse --show-toplevel 2>/dev/null) || {
-        print_summary
-        return 1
-    }
-
-    local -a candidate_wt_paths candidate_wt_branches candidate_branches
-    local wt_path="" wt_branch="" saw_detached=0
-
-    flush_wt_record () {
-        if [[ -z "$wt_path" ]]; then
-            wt_branch="" saw_detached=0
-            return 0
-        fi
-
-        if (( saw_detached )) || [[ -z "$wt_branch" ]]; then
-            wt_path="" wt_branch="" saw_detached=0
-            return 0
-        fi
-
-        if [[ "$wt_path" == "$main_wt" ]]; then
-            wt_path="" wt_branch="" saw_detached=0
-            return 0
-        fi
-
-        local rel="${wt_path#"$wt_base"/}"
-        if [[ "$wt_path" != "$wt_base/$rel" ]] || [[ "$rel" != "$wt_branch" ]]; then
-            wt_path="" wt_branch="" saw_detached=0
-            return 0
-        fi
-
-        candidate_wt_paths+=("$wt_path")
-        candidate_wt_branches+=("$wt_branch")
-        candidate_branches+=("$wt_branch")
-        wt_path="" wt_branch="" saw_detached=0
-    }
-
-    local line ref
-    while IFS= read -r line; do
-        if [[ -z "$line" ]]; then
-            flush_wt_record
+        state=$(_git-wt-slot-state "$slot")
+        if [[ "$state" == "dirty" || "$state" == "current" ]]; then
+            print -r -- "gwtprune: skipping $slot ($branch, $state)" >&2
             continue
         fi
 
-        case "$line" in
-            worktree\ *)
-                flush_wt_record
-                wt_path="${line#worktree }"
-                wt_branch="" saw_detached=0
-                ;;
-            detached)
-                saw_detached=1
-                ;;
-            branch\ *)
-                ref="${line#branch }"
-                wt_branch="${ref#refs/heads/}"
-                if [[ "$wt_branch" == "$ref" ]]; then
-                    wt_branch=""
-                fi
-                ;;
-        esac
-    done < <(print -r -- "$porcelain")
-
-    flush_wt_record
+        slot_paths+=("$slot")
+        slot_branches+=("$branch")
+    done
 
     local -A stale_map
     local b
-    if (( ${#candidate_branches} > 0 )); then
-        for b in "${(@f)$(_git-stale-local-branches "" "${candidate_branches[@]}")}"; do
+    if (( ${#slot_branches} > 0 )); then
+        for b in "${(@f)$(_git-stale-local-branches "" "${slot_branches[@]}")}"; do
             [[ -n "$b" ]] && stale_map[$b]=1
         done
     fi
 
-    print -r -- "gwtprune: scanning worktrees (${#candidate_branches} managed branch candidate(s), ${#stale_map} stale)..."
+    print -r -- "gwtprune: scanning slots (${#slot_branches} branch candidate(s), ${#stale_map} stale)..."
 
-    local i
-    for (( i = 1; i <= ${#candidate_wt_paths}; i++ )); do
-        wt_path="${candidate_wt_paths[$i]}"
-        wt_branch="${candidate_wt_branches[$i]}"
+    local released=0 failed=0 i
+    for (( i = 1; i <= ${#slot_paths}; i++ )); do
+        slot="${slot_paths[$i]}"
+        branch="${slot_branches[$i]}"
 
-        if [[ -z "${stale_map[$wt_branch]-}" ]]; then
-            continue
-        fi
+        [[ -n "${stale_map[$branch]-}" ]] || continue
 
-        if [[ "$wt_path" == "$repo_root" ]]; then
-            print -r -- "gwtprune: skipping $wt_path (current directory)" >&2
-            (( skipped_current += 1 ))
-            continue
-        fi
-
-        print -r -- "gwtprune: removing worktree $wt_path ($wt_branch)"
-        if git worktree remove "$wt_path"; then
-            (( removed_worktrees += 1 ))
-            print -r -- "gwtprune: deleting branch $wt_branch"
-            if git branch -D "$wt_branch"; then
-                (( deleted_branches += 1 ))
-            else
-                (( failed_branches += 1 ))
-            fi
+        print -r -- "gwtprune: releasing $slot ($branch)"
+        if _git-wt-release-slot --delete-branch "$slot"; then
+            (( released += 1 ))
         else
-            print -r -- "gwtprune: worktree remove failed for $wt_path" >&2
-            (( failed_worktrees += 1 ))
+            (( failed += 1 ))
         fi
     done
 
     local prune_status=0
     git worktree prune -v || prune_status=$?
-    print_summary
-    (( prune_status == 0 && failed_worktrees == 0 && failed_branches == 0 ))
+    print -r -- "gwtprune: released $released slot(s), failed $failed"
+    (( prune_status == 0 && failed == 0 ))
 }
 
 # Pull from main
@@ -860,35 +1150,61 @@ if [[ -n "${ZSH_VERSION-}" ]]; then
         _wanted branches expl 'branch' compadd -M 'r:|/=* r:|=*' -o nosort -a - branches
     }
 
-    _git_shorthand_worktree_branches () {
-        local wt_base
-        wt_base=$(_git-wt-base 2>/dev/null) || return 1
+    # Branches currently checked out in any pool slot. Used to complete `gwtd`
+    # (which only operates on slots that actually hold the named branch).
+    _git_shorthand_slot_branches () {
+        local -a slots
+        slots=("${(@f)$(_git-wt-pool-slots 2>/dev/null)}")
+        (( ${#slots} )) || return 1
 
+        local -a branches
+        local slot ref
+        for slot in "${slots[@]}"; do
+            [[ -z "$slot" ]] && continue
+            ref=$(git -C "$slot" symbolic-ref --quiet --short HEAD 2>/dev/null) || continue
+            [[ -n "$ref" ]] && branches+=("$ref")
+        done
+        (( ${#branches} )) || return 1
+
+        local expl
+        _wanted branches expl 'slot branch' compadd -M 'r:|/=* r:|=*' -o nosort -a - branches
+    }
+
+    # gwtcd accepts a fuzzy substring. We suggest both slot directory names
+    # (tree-N) and the branches currently checked out in slots, plus "root".
+    # The current target is omitted to avoid suggesting a no-op.
+    _git_shorthand_gwtcd_targets () {
         local current_target
         current_target=$(_git-current-wt-target 2>/dev/null)
         [[ -z "$current_target" ]] && current_target="root"
 
+        local -a slots
+        slots=("${(@f)$(_git-wt-pool-slots 2>/dev/null)}")
+
         local -a candidates
-        candidates=("$wt_base"/*(N:t))
+        local slot ref
+        for slot in "${slots[@]}"; do
+            [[ -z "$slot" ]] && continue
+            candidates+=("${slot:t}")
+            ref=$(git -C "$slot" symbolic-ref --quiet --short HEAD 2>/dev/null) || continue
+            [[ -n "$ref" ]] && candidates+=("$ref")
+        done
         candidates+=("root")
 
         local -a suggestions
         local -A seen
-        local branch
-        for branch in "${candidates[@]}"; do
-            [[ -n "$branch" ]] || continue
-            (( ${+seen[$branch]} )) && continue
-            seen[$branch]=1
-            [[ -n "$current_target" && "$branch" == "$current_target" ]] && continue
-            suggestions+=("$branch")
+        local entry
+        for entry in "${candidates[@]}"; do
+            [[ -n "$entry" ]] || continue
+            (( ${+seen[$entry]} )) && continue
+            seen[$entry]=1
+            [[ -n "$current_target" && "$entry" == "$current_target" ]] && continue
+            suggestions+=("$entry")
         done
-        if [[ -n "$current_target" ]] && (( ${+seen[$current_target]} )); then
-            suggestions+=("$current_target")
-        fi
         (( ${#suggestions} )) || return 1
 
         local expl
-        _wanted branches expl 'worktree branch' compadd -M 'r:|/=* r:|=*' -Q -o nosort -- "${suggestions[@]}"
+        _wanted slots expl 'slot or branch' compadd -M 'r:|/=* r:|=*' -Q -o nosort -- "${suggestions[@]}"
     }
 
     _git_shorthand_new_branch_name () {
@@ -899,46 +1215,37 @@ if [[ -n "${ZSH_VERSION-}" ]]; then
         fi
     }
 
+    _git_shorthand_gwta () {
+        _arguments \
+            '--base[base ref for the new branch]:base:_git_shorthand_all_branches' \
+            '--no-install[skip package-manager install after activation]' \
+            '1:new branch name:'
+    }
+
+    _git_shorthand_gwtco () {
+        _arguments \
+            '--no-install[skip package-manager install after activation]' \
+            '1:branch:_git_shorthand_all_branches'
+    }
+
     _git_shorthand_gwtd () {
-        if (( CURRENT == 2 )); then
-            _arguments \
-                '--force[remove worktree without safety checks]' \
-                '1:branch:_git_shorthand_local_branches'
-        elif (( CURRENT == 3 )) && [[ "${words[2]}" == "--force" ]]; then
-            _git_shorthand_local_branches
-        else
-            _message 'no more arguments'
-        fi
+        _arguments \
+            '--delete-branch[also delete the branch after release]' \
+            '--force[ignore dirty working tree]' \
+            '1:branch:_git_shorthand_slot_branches'
     }
 
     _git_shorthand_gwtcd () {
         if (( CURRENT == 2 )); then
-            _git_shorthand_worktree_branches
+            _git_shorthand_gwtcd_targets
         else
             _message 'no more arguments'
         fi
-    }
-
-    _git_shorthand_gwtup () {
-        _arguments \
-            '--base[base ref for new branches]:base:_git_shorthand_all_branches' \
-            '--no-fetch[skip fetching origin before resolving branches]' \
-            '--no-node-modules[skip node_modules cache seeding]' \
-            '--no-install[skip package-manager install after worktree creation]' \
-            '1:branch:_git_shorthand_all_branches'
     }
 
     _git_shorthand_single_local_branch () {
         if (( CURRENT == 2 )); then
             _git_shorthand_local_branches
-        else
-            _message 'no more arguments'
-        fi
-    }
-
-    _git_shorthand_single_all_branches () {
-        if (( CURRENT == 2 )); then
-            _git_shorthand_all_branches
         else
             _message 'no more arguments'
         fi
@@ -981,12 +1288,12 @@ if [[ -n "${ZSH_VERSION-}" ]]; then
             gfm=git-fetch \
             gprm=git-rebase
 
-        compdef _git_shorthand_new_branch_name gnb gnbpp gfmnb gwta gfmwta grnb gcobpp
+        compdef _git_shorthand_new_branch_name gnb gnbpp gfmnb grnb gcobpp
         compdef _git_shorthand_single_local_branch git-obliterate
-        compdef _git_shorthand_single_all_branches gwtco
+        compdef _git_shorthand_gwta gwta gfmwta
+        compdef _git_shorthand_gwtco gwtco
         compdef _git_shorthand_gwtd gwtd
         compdef _git_shorthand_gwtcd gwtcd
-        compdef _git_shorthand_gwtup gwtup
 
         typeset -g _git_shorthand_completions_registered=1
     }
