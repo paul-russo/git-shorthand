@@ -127,10 +127,13 @@ Describe 'gbprune (prune merged branches)'
 
   Mock gh
     case "$*" in
-      pr\ list*headRefName*headRefOid*)
+      pr\ list*--head\ squashed*)
         if [[ -n "${GBPRUNE_GH_HEAD_OIDS:-}" ]]; then
-          printf 'squashed\t%s\n' "$GBPRUNE_GH_HEAD_OIDS"
+          printf '%s\n' "$GBPRUNE_GH_HEAD_OIDS"
         fi
+        return 0
+        ;;
+      pr\ list*--head\ *)
         return 0
         ;;
       *)

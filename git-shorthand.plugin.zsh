@@ -899,6 +899,13 @@ _git-local-branch-patch-id () {
 }
 
 # Helper: print candidate branches whose exact tips are reported merged by GitHub.
+# Issues one `gh pr list --head <branch>` query per candidate instead of a single
+# bulk `--limit 1000` fetch. The bulk approach silently misses merges on repos
+# whose merge history exceeds the limit; per-branch queries scale with the local
+# candidate count, not the repo's PR history, and stay accurate on huge repos.
+# Each match still requires the merged PR's headRefOid to equal the local
+# branch tip — otherwise the local branch carries commits beyond what was
+# merged and is unsafe to auto-delete.
 _git-github-merged-local-branches () {
     local main_branch="$1"
     shift
@@ -906,26 +913,18 @@ _git-github-merged-local-branches () {
     command -v gh >/dev/null 2>&1 || return 0
     (( $# > 0 )) || return 0
 
-    local -A candidate_name_map candidate_oid_by_branch
-    local branch oid
+    local branch local_oid pr_oid
     for branch in "$@"; do
-        [[ -n "$branch" ]] && candidate_name_map[$branch]=1
+        [[ -n "$branch" ]] || continue
+
+        local_oid=$(git rev-parse --verify "refs/heads/$branch" 2>/dev/null) || continue
+        [[ -n "$local_oid" ]] || continue
+
+        pr_oid=$(gh pr list --state merged --head "$branch" --base "$main_branch" --limit 1 --json headRefOid --jq '.[].headRefOid' 2>/dev/null) || continue
+        [[ -n "$pr_oid" ]] || continue
+
+        [[ "$local_oid" == "$pr_oid" ]] && print -r -- "$branch"
     done
-
-    while IFS=$'\t' read -r branch oid; do
-        [[ -n "$branch" && -n "$oid" ]] || continue
-        if [[ -n "${candidate_name_map[$branch]-}" ]]; then
-            candidate_oid_by_branch[$branch]="$oid"
-        fi
-    done < <(git for-each-ref --format=$'%(refname:short)\t%(objectname)' refs/heads 2>/dev/null)
-
-    (( ${#candidate_oid_by_branch} > 0 )) || return 0
-
-    local pr_branch pr_oid
-    while IFS=$'\t' read -r pr_branch pr_oid; do
-        [[ -n "$pr_branch" && -n "$pr_oid" ]] || continue
-        [[ "${candidate_oid_by_branch[$pr_branch]-}" == "$pr_oid" ]] && print -r -- "$pr_branch"
-    done < <(gh pr list --state merged --base "$main_branch" --limit 1000 --json headRefName,headRefOid --jq '.[] | [.headRefName, .headRefOid] | @tsv' 2>/dev/null)
 }
 
 # List local branch names stale relative to origin's main branch: upstream gone, merged into
@@ -974,7 +973,23 @@ _git-stale-local-branches () {
         stale_map[$branch]=1
     done < <(git for-each-ref --merged "$main_ref" --format='%(refname:short)' refs/heads 2>/dev/null)
 
-    # 3. Branches whose net changes are already on main (identical tree, squash, etc.)
+    # 3. Branches whose exact tip was merged through a GitHub PR (squash merge, etc.).
+    # Runs before the patch-id fallback so squash merges resolve via one cheap
+    # `gh pr list --head <branch>` round trip per branch. On huge repos this
+    # avoids generating the multi-gigabyte `git log -p merge_base..main` diff
+    # the patch-id step would otherwise produce for every unresolved branch.
+    for branch in "${(@k)candidate_map}"; do
+        [[ -z "${stale_map[$branch]-}" ]] && unstale_candidates+=("$branch")
+    done
+
+    for branch in "${(@f)$(_git-github-merged-local-branches "$main_branch" "${unstale_candidates[@]}")}"; do
+        [[ -n "${candidate_map[$branch]-}" ]] && stale_map[$branch]=1
+    done
+
+    # 4. Patch-id fallback: catches non-PR merges (cherry-picks, manual squashes
+    # without a PR) on whatever the gh check couldn't classify. Skipped
+    # entirely when gh handled all remaining candidates, which is the common
+    # case in GitHub-centric workflows.
     local -A main_patch_ids_by_base
     local patch_info merge_base branch_patch main_patch_ids
     for branch in "${(@k)candidate_map}"; do
@@ -997,15 +1012,6 @@ _git-stale-local-branches () {
         if [[ "${main_patch_ids_by_base[$merge_base]}" == *$'\n'"$branch_patch"$'\n'* ]]; then
             stale_map[$branch]=1
         fi
-    done
-
-    # 4. Branches whose exact tip was merged through a GitHub PR (squash merge, etc.)
-    for branch in "${(@k)candidate_map}"; do
-        [[ -z "${stale_map[$branch]-}" ]] && unstale_candidates+=("$branch")
-    done
-
-    for branch in "${(@f)$(_git-github-merged-local-branches "$main_branch" "${unstale_candidates[@]}")}"; do
-        [[ -n "${candidate_map[$branch]-}" ]] && stale_map[$branch]=1
     done
 
     local -A printed_map
