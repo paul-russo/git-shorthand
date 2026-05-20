@@ -209,6 +209,14 @@ fi
 
 # Returns 0 if the named branch is already merged into $main_branch.
 # Tries local ancestor check first, then a per-branch `gh pr list` query.
+#
+# Note: a `<base>/main` worktree whose local main is in sync with
+# origin/main will land here as "merged" (refs/heads/main is trivially an
+# ancestor of refs/remotes/origin/main). That's intentional — the main
+# repo and origin/main are the source of truth, so the dedicated main
+# worktree (and its local branch ref) can be safely trashed. If local main
+# is ahead of origin, the ancestor check fails and we migrate instead,
+# preserving the unmerged commits.
 is_branch_merged() {
     local branch="$1"
 

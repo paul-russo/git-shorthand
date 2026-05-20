@@ -275,15 +275,20 @@ _git-wt-slot-branch () {
 
 # Helper: mtime of a slot path. Used by _git-wt-pick-idle-slot for "oldest first"
 # and by gwtl for sort-by-recency.
+#
+# Probes which stat flavor is on PATH because plain `stat -f '%m'` is not safe
+# to try first: on GNU coreutils (Linux, or homebrew on macOS) `-f` means
+# "display file system status" and prints a multi-line `df`-style block, which
+# previously got captured into mtime and broke gwtl's arithmetic.
 _git-wt-slot-mtime () {
     local slot="$1"
     [[ -d "$slot" ]] || return 1
 
-    # BSD stat (macOS) first, then GNU stat fallback (Linux).
-    if stat -f '%m' "$slot" 2>/dev/null; then
-        return
+    if stat --version >/dev/null 2>&1; then
+        stat -c '%Y' "$slot" 2>/dev/null
+    else
+        stat -f '%m' "$slot" 2>/dev/null
     fi
-    stat -c '%Y' "$slot" 2>/dev/null
 }
 
 # Helper: classify a slot. Returns one of idle/active/dirty/current.
