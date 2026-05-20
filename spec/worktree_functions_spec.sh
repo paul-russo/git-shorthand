@@ -290,14 +290,15 @@ Describe '_git-wt-slot-state'
     The output should eq 'current'
   End
 
-  It 'returns dirty when status --porcelain has output'
+  It 'returns dirty when diff-index reports tracked-file changes'
     Mock git
       case "$*" in
         "rev-parse --show-toplevel")
           print -r -- /tmp/main-repo
           ;;
-        *status*porcelain*)
-          print -r -- ' M file.txt'
+        *diff-index*)
+          # exit 1 = differences detected.
+          return 1
           ;;
       esac
     End
@@ -306,13 +307,33 @@ Describe '_git-wt-slot-state'
     The output should eq 'dirty'
   End
 
+  It 'does not mark a brand-new worktree (no HEAD) as dirty'
+    Mock git
+      case "$*" in
+        "rev-parse --show-toplevel")
+          print -r -- /tmp/main-repo
+          ;;
+        *diff-index*)
+          # exit 128 = no HEAD / real error; must not be classified dirty.
+          return 128
+          ;;
+        *symbolic-ref*)
+          return 1
+          ;;
+      esac
+    End
+
+    When call _git-wt-slot-state /tmp/git-shorthand-spec-slot-state
+    The output should eq 'idle'
+  End
+
   It 'returns active when clean and a branch is checked out'
     Mock git
       case "$*" in
         "rev-parse --show-toplevel")
           print -r -- /tmp/main-repo
           ;;
-        *status*porcelain*)
+        *diff-index*)
           ;;
         *symbolic-ref*)
           print -r -- 'feature/foo'
@@ -330,7 +351,7 @@ Describe '_git-wt-slot-state'
         "rev-parse --show-toplevel")
           print -r -- /tmp/main-repo
           ;;
-        *status*porcelain*)
+        *diff-index*)
           ;;
         *symbolic-ref*)
           return 1
@@ -340,6 +361,29 @@ Describe '_git-wt-slot-state'
 
     When call _git-wt-slot-state /tmp/git-shorthand-spec-slot-state
     The output should eq 'idle'
+  End
+
+  It 'skips the diff-index call when the skip-dirty arg is set'
+    # diff-index would return 1 (dirty) here — if the caller asked to skip
+    # the check, we must not invoke it and the slot must come back active.
+    Mock git
+      case "$*" in
+        "rev-parse --show-toplevel")
+          print -r -- /tmp/main-repo
+          ;;
+        *diff-index*)
+          echo "BUG: diff-index should not be called when skip-dirty is set" >&2
+          return 1
+          ;;
+        *symbolic-ref*)
+          print -r -- 'feature/foo'
+          ;;
+      esac
+    End
+
+    When call _git-wt-slot-state /tmp/git-shorthand-spec-slot-state 1
+    The output should eq 'active'
+    The stderr should be blank
   End
 End
 
@@ -940,6 +984,62 @@ Describe 'gwtl (list pool)'
     The line 1 of output should include 'BRANCH'
     The line 2 of output should include '<detached>'
     The line 2 of output should include '(main repo)'
+  End
+
+  It 'asks _git-wt-slot-state to skip the dirty check by default'
+    # gwtl runs the per-slot state probe in a backgrounded subshell, so a
+    # plain global from the helper would not survive the wait. Persist the
+    # captured args via a file the assertion can read instead.
+    _git-wt-pool-slots() { printf '/tmp/wt/tree-1\n'; }
+    _git-wt-slot-branch() { print -r -- 'feature/foo'; }
+    _git-wt-slot-mtime() { print -r -- '100'; }
+    rm -f /tmp/gwtl-state-call-args
+    _git-wt-slot-state() {
+      print -r -- "$*" > /tmp/gwtl-state-call-args
+      print -r -- 'active'
+    }
+
+    Mock git
+      case "$*" in
+        "-C /tmp/main-repo symbolic-ref --quiet --short HEAD")
+          print -r -- 'main'
+          ;;
+      esac
+    End
+
+    When call gwtl
+    The line 1 of output should include 'BRANCH'
+    The contents of file /tmp/gwtl-state-call-args should equal '/tmp/wt/tree-1 1'
+  End
+
+  It 'asks _git-wt-slot-state to run the dirty check when --dirty is set'
+    _git-wt-pool-slots() { printf '/tmp/wt/tree-1\n'; }
+    _git-wt-slot-branch() { print -r -- 'feature/foo'; }
+    _git-wt-slot-mtime() { print -r -- '100'; }
+    rm -f /tmp/gwtl-state-call-args
+    _git-wt-slot-state() {
+      print -r -- "$*" > /tmp/gwtl-state-call-args
+      print -r -- 'dirty'
+    }
+
+    Mock git
+      case "$*" in
+        "-C /tmp/main-repo symbolic-ref --quiet --short HEAD")
+          print -r -- 'main'
+          ;;
+      esac
+    End
+
+    When call gwtl --dirty
+    The line 1 of output should include 'BRANCH'
+    # Trailing space + empty second arg means "do not skip the dirty check".
+    The contents of file /tmp/gwtl-state-call-args should equal '/tmp/wt/tree-1 '
+  End
+
+  It 'rejects unknown options'
+    When call gwtl --bogus
+    The stderr should include 'unknown option'
+    The status should be failure
   End
 End
 

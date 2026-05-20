@@ -295,8 +295,27 @@ _git-wt-slot-mtime () {
 # Precedence: current beats everything (we never auto-release or auto-reuse the
 # slot we are in); dirty beats active/idle (an uncommitted slot is never safe
 # to reuse).
+#
+# "Dirty" intentionally means "tracked-file changes vs HEAD" — staged or
+# unstaged. Untracked files do NOT count: in a warm-slot pool they are
+# typically build artifacts (node_modules, dist/, etc., often gitignored
+# anyway), and `git checkout` preserves untracked files across branch
+# switches, so they don't represent data loss when a slot is recycled.
+#
+# `diff-index --quiet HEAD` is also several times faster than
+# `status --porcelain` on a large repo because it skips the untracked-file
+# enumeration — but on a multi-gigabyte monorepo it still costs ~0.2–0.5s
+# per slot for the stat scan, which is the dominant cost when iterating a
+# full pool. Callers that don't need a load-bearing dirty signal can pass
+# any non-empty second argument to skip it (the slot then comes back as
+# active/idle/current only).
+#
+# Safety-critical callers (slot recycling via _git-wt-pick-idle-slot, and
+# `gwtd`) must NOT pass that flag — skipping the check there would risk
+# silently recycling a slot with uncommitted work.
 _git-wt-slot-state () {
     local slot="$1"
+    local skip_dirty="${2-}"
     [[ -d "$slot" ]] || return 1
 
     local repo_root
@@ -306,11 +325,16 @@ _git-wt-slot-state () {
         return
     fi
 
-    local status_out
-    status_out=$(git -C "$slot" status --porcelain 2>/dev/null) || return 1
-    if [[ -n "$status_out" ]]; then
-        print -r -- "dirty"
-        return
+    if [[ -z "$skip_dirty" ]]; then
+        # diff-index exit codes: 0 = clean, 1 = tracked-file changes vs HEAD,
+        # >1 = real error (e.g. no HEAD on a brand-new worktree). Only treat
+        # exit 1 as dirty so a fresh detached slot doesn't get mislabeled.
+        local rc=0
+        git -C "$slot" diff-index --quiet HEAD -- 2>/dev/null || rc=$?
+        if (( rc == 1 )); then
+            print -r -- "dirty"
+            return
+        fi
     fi
 
     local branch
@@ -780,32 +804,84 @@ gwtcd () {
 # List the pool: main repo row, then slots sorted by mtime descending. Columns
 # are BRANCH | STATE | LAST MODIFIED | PATH.
 gwtl () {
+    # Default to fast mode: skip the per-slot dirty check, which on a
+    # multi-gigabyte monorepo dominates wall time even when parallelized
+    # (the kernel saturates on simultaneous tree scans across slots).
+    # `--dirty` opts into the slow path when the user actually wants to
+    # see which slots have uncommitted edits.
+    local skip_dirty=1
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --dirty)
+                skip_dirty=
+                shift
+                ;;
+            -h|--help)
+                print -r -- "usage: gwtl [--dirty]"
+                return 0
+                ;;
+            *)
+                print -r -- "gwtl: unknown option: $1" >&2
+                return 1
+                ;;
+        esac
+    done
+
     local main_wt
     main_wt=$(_git-main-worktree) || return 1
 
-    printf '%-30s %-10s %-15s %s\n' "BRANCH" "STATE" "LAST MODIFIED" "PATH"
-
     local main_branch
     main_branch=$(git -C "$main_wt" symbolic-ref --quiet --short HEAD 2>/dev/null) || main_branch="<detached>"
-    printf '%-30s %-10s %-15s %s\n' "$main_branch" "(main repo)" "" "$main_wt"
 
-    local slot branch state mtime
-    local now
-    now=$(date +%s)
-    local -a sortable
+    # Collect per-slot metadata in parallel. Even with the dirty check
+    # skipped, the symbolic-ref + mtime probes per slot benefit from
+    # running concurrently; with --dirty the parallelism is essential to
+    # avoid multi-second serial latency.
+    local tmpfile
+    tmpfile=$(mktemp "${TMPDIR:-/tmp}/git-shorthand-gwtl.XXXXXX" 2>/dev/null) || return 1
+
+    local slot
     for slot in "${(@f)$(_git-wt-pool-slots)}"; do
         [[ -z "$slot" ]] && continue
-        branch=$(_git-wt-slot-branch "$slot")
-        [[ -z "$branch" ]] && branch="<detached>"
-        state=$(_git-wt-slot-state "$slot")
-        mtime=$(_git-wt-slot-mtime "$slot")
-        [[ -z "$mtime" ]] && mtime=0
-        sortable+=("$mtime"$'\t'"$branch"$'\t'"$state"$'\t'"$slot")
+        {
+            local b s m
+            b=$(_git-wt-slot-branch "$slot")
+            [[ -z "$b" ]] && b="<detached>"
+            s=$(_git-wt-slot-state "$slot" "$skip_dirty")
+            m=$(_git-wt-slot-mtime "$slot")
+            [[ -z "$m" ]] && m=0
+            # Single appended line; well under PIPE_BUF, so concurrent writes
+            # from sibling jobs stay atomic.
+            print -r -- "$m"$'\t'"$b"$'\t'"$s"$'\t'"$slot" >> "$tmpfile"
+        } &
     done
+    wait
 
-    (( ${#sortable} > 0 )) || return 0
+    local -a sortable
+    local line
+    while IFS= read -r line; do
+        [[ -n "$line" ]] && sortable+=("$line")
+    done < "$tmpfile"
+    rm -f "$tmpfile"
 
-    local line age delta rest path
+    # Compute column widths from the actual data. Branches can be long (the
+    # plugin's own naming convention encourages descriptive names), so a
+    # fixed width truncates or pushes columns out of alignment.
+    local hdr_branch="BRANCH" hdr_state="STATE" hdr_age="LAST MODIFIED"
+    local main_repo_state="(main repo)"
+    local max_branch=${#hdr_branch} max_state=${#hdr_state} max_age=${#hdr_age}
+    (( ${#main_branch} > max_branch )) && max_branch=${#main_branch}
+    (( ${#main_repo_state} > max_state )) && max_state=${#main_repo_state}
+
+    # Avoid `path` as a local: zsh ties it to the PATH array, so a string
+    # assignment quietly clobbers PATH inside the function and leaves later
+    # commands (`date`, etc.) "not found".
+    local mtime branch state slot_path now age delta rest
+    now=$(date +%s)
+
+    # First pass: compute widths and build display-ready rows so we don't
+    # repeat the age formatting in the print loop.
+    local -a rows
     for line in "${(@On)sortable}"; do
         mtime="${line%%$'\t'*}"
         rest="${line#*$'\t'}"
@@ -813,7 +889,7 @@ gwtl () {
         rest="${rest#*$'\t'}"
         state="${rest%%$'\t'*}"
         rest="${rest#*$'\t'}"
-        path="$rest"
+        slot_path="$rest"
 
         delta=$((now - mtime))
         if (( delta < 60 )); then
@@ -826,7 +902,32 @@ gwtl () {
             age="$((delta/86400))d ago"
         fi
 
-        printf '%-30s %-10s %-15s %s\n' "$branch" "$state" "$age" "$path"
+        (( ${#branch} > max_branch )) && max_branch=${#branch}
+        (( ${#state} > max_state )) && max_state=${#state}
+        (( ${#age} > max_age )) && max_age=${#age}
+
+        rows+=("$branch"$'\t'"$state"$'\t'"$age"$'\t'"$slot_path")
+    done
+
+    # Format string is built from data-driven column widths, hence
+    # SC2059 (variable-as-format) is intentional here.
+    local fmt="%-${max_branch}s  %-${max_state}s  %-${max_age}s  %s\n"
+    # shellcheck disable=SC2059
+    printf "$fmt" "$hdr_branch" "$hdr_state" "$hdr_age" "PATH"
+    # shellcheck disable=SC2059
+    printf "$fmt" "$main_branch" "$main_repo_state" "" "$main_wt"
+
+    local row b s a p
+    for row in "${rows[@]}"; do
+        b="${row%%$'\t'*}"
+        rest="${row#*$'\t'}"
+        s="${rest%%$'\t'*}"
+        rest="${rest#*$'\t'}"
+        a="${rest%%$'\t'*}"
+        rest="${rest#*$'\t'}"
+        p="$rest"
+        # shellcheck disable=SC2059
+        printf "$fmt" "$b" "$s" "$a" "$p"
     done
 }
 
