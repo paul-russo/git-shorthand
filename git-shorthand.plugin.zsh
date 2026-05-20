@@ -1093,10 +1093,12 @@ _git-local-branch-is-stale () {
 # Handles: upstream gone, regular merge, squash merge, rebase merge.
 #
 # When a stale branch is still held by a linked worktree, `git branch -D`
-# refuses to delete it. Auto-handle that case here: if the worktree's working
-# tree is clean we trash the directory, prune the worktree metadata, and
-# retry the delete. Dirty worktrees are skipped with a clear message so
-# uncommitted work is never silently destroyed.
+# refuses to delete it. Auto-handle that case here by delegating to
+# `_git-wt-release-slot --delete-branch`, which detaches HEAD and deletes
+# the branch but leaves the worktree directory intact — so pool slots
+# stay in the pool with their warm `node_modules` / build artifacts ready
+# for reuse. Dirty (or `current`) holders are refused by the helper with
+# a clear message, so uncommitted work is never silently destroyed.
 gbprune () {
     print -r -- "gbprune: fetching remotes with prune..."
     git fetch --prune || return 1
@@ -1134,30 +1136,21 @@ gbprune () {
 
         local holder="${worktree_by_branch[$branch]-}"
         if [[ -n "$holder" ]]; then
-            local holder_status
-            holder_status=$(git -C "$holder" status --porcelain 2>/dev/null)
-
-            if [[ -n "$holder_status" ]]; then
-                print -r -- "gbprune: skipping $branch — held by dirty worktree $holder"
-                (( failed_branches += 1 ))
-                continue
-            fi
-
-            if ! command -v trash >/dev/null 2>&1; then
-                print -r -- "gbprune: skipping $branch — held by worktree $holder (\`trash\` not installed; release manually with \`gwtd\` or \`git worktree remove\`)"
-                (( failed_branches += 1 ))
-                continue
-            fi
-
-            print -r -- "gbprune: releasing clean worktree $holder (branch: $branch)"
-            if trash "$holder"; then
-                git worktree prune >/dev/null 2>&1
+            # Release the slot (detach HEAD + delete branch) and keep the
+            # directory so the warm pool slot can be reused. The helper
+            # prints "gwtpool: detaching HEAD in <slot> (was <branch>)" and
+            # "gwtpool: deleting branch <branch>", and refuses dirty/current
+            # slots without touching them. On success the branch is already
+            # gone, so skip the trailing `git branch -D` below.
+            print -r -- "gbprune: releasing slot $holder for stale branch $branch"
+            if _git-wt-release-slot --delete-branch "$holder"; then
+                (( deleted_branches += 1 ))
                 (( released_worktrees += 1 ))
             else
-                print -r -- "gbprune: trash failed for $holder; skipping $branch"
+                print -r -- "gbprune: skipping $branch — slot $holder could not be released (see message above)"
                 (( failed_branches += 1 ))
-                continue
             fi
+            continue
         fi
 
         print -r -- "gbprune: deleting branch $branch"
@@ -1169,7 +1162,7 @@ gbprune () {
     done
 
     local summary="gbprune: deleted $deleted_branches branch(es), failed $failed_branches"
-    (( released_worktrees > 0 )) && summary+=", released $released_worktrees worktree(s)"
+    (( released_worktrees > 0 )) && summary+=" (released $released_worktrees slot(s))"
     print -r -- "$summary"
     (( failed_branches == 0 ))
 }

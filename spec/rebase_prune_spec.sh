@@ -51,19 +51,6 @@ Describe 'gbprune (prune merged branches)'
         esac
         return 0
         ;;
-      -C)
-        # Handle `git -C <path> status --porcelain` for the held-worktree
-        # cleanliness probe. Specs set GBPRUNE_DIRTY_WT_PATH to one
-        # worktree path that should report dirty; everything else is clean.
-        if [[ "${3:-}" = "status" ]]; then
-          if [[ -n "${GBPRUNE_DIRTY_WT_PATH:-}" && "$2" = "$GBPRUNE_DIRTY_WT_PATH" ]]; then
-            printf ' M somefile\n'
-          fi
-          return 0
-        fi
-        printf '%s\n' "git $*"
-        return 0
-        ;;
       rev-parse)
         if [[ "${2:-}" = "--verify" ]]; then
           case "${3:-}" in
@@ -176,16 +163,6 @@ Describe 'gbprune (prune merged branches)'
     esac
   End
 
-  Mock trash
-    # Default mock: silently succeeds. Specs that need failure override
-    # by exporting GBPRUNE_TRASH_FAIL_PATH and we honor it here.
-    if [[ -n "${GBPRUNE_TRASH_FAIL_PATH:-}" && "$1" = "$GBPRUNE_TRASH_FAIL_PATH" ]]; then
-      return 1
-    fi
-    printf '%s\n' "trash $*"
-    return 0
-  End
-
   It 'fetches with prune and force-deletes branches fully merged into main'
     When call gbprune
     The output should include 'gbprune: fetching remotes with prune...'
@@ -238,30 +215,46 @@ Describe 'gbprune (prune merged branches)'
     The stderr should include 'querying GitHub'
   End
 
-  It 'releases a clean worktree holding a stale branch, then deletes the branch'
+  It 'releases the slot holding a stale branch (detach HEAD + delete branch, directory preserved)'
     # `gone` is marked stale by the upstream-gone check. Pretend a linked
-    # worktree at /tmp/wt-gone is holding it, with a clean working tree.
+    # worktree at /tmp/wt-gone is holding it. Mock _git-wt-release-slot
+    # to stand in for the real helper (covered separately in
+    # worktree_functions_spec.sh) and just verify gbprune orchestrates the
+    # release + branch delete + summary correctly.
     GBPRUNE_WT_PORCELAIN=$(printf 'worktree /tmp/wt-gone\nHEAD abc\nbranch refs/heads/gone\n\n')
     export GBPRUNE_WT_PORCELAIN
 
+    _git-wt-release-slot() {
+      printf 'gwtpool: detaching HEAD in %s (was gone)\n' "$2"
+      printf 'gwtpool: deleting branch gone\n'
+      return 0
+    }
+
     When call gbprune
-    The output should include 'releasing clean worktree /tmp/wt-gone (branch: gone)'
-    The output should include 'trash /tmp/wt-gone'
-    The output should include 'git branch -D gone'
-    The output should include 'released 1 worktree(s)'
+    The output should include 'releasing slot /tmp/wt-gone for stale branch gone'
+    The output should include 'detaching HEAD in /tmp/wt-gone'
+    The output should include 'deleting branch gone'
+    The output should include 'released 1 slot(s)'
+    The output should not include 'trash'
   End
 
-  It 'skips a stale branch held by a dirty worktree without destroying changes'
-    # Same setup as above, but the worktree reports modifications.
+  It 'skips a stale branch held by a dirty slot without destroying changes'
+    # Same setup as above, but the release helper refuses because the slot
+    # is dirty. gbprune should skip with a clear pointer to the helper's
+    # message and report a failure in the summary.
     GBPRUNE_WT_PORCELAIN=$(printf 'worktree /tmp/wt-gone-dirty\nHEAD abc\nbranch refs/heads/gone\n\n')
-    GBPRUNE_DIRTY_WT_PATH='/tmp/wt-gone-dirty'
-    export GBPRUNE_WT_PORCELAIN GBPRUNE_DIRTY_WT_PATH
+    export GBPRUNE_WT_PORCELAIN
+
+    _git-wt-release-slot() {
+      printf 'gwtpool: %s has uncommitted changes; commit/stash first, or use --force\n' "$2" >&2
+      return 1
+    }
 
     When call gbprune
-    The output should include 'skipping gone — held by dirty worktree /tmp/wt-gone-dirty'
-    The output should not include 'trash /tmp/wt-gone-dirty'
-    The output should not include 'git branch -D gone'
+    The output should include 'releasing slot /tmp/wt-gone-dirty for stale branch gone'
+    The output should include 'skipping gone'
     The output should include 'failed 1'
+    The stderr should include 'has uncommitted changes'
     The status should be failure
   End
 End
