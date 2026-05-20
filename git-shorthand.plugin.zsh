@@ -903,9 +903,10 @@ _git-local-branch-patch-id () {
 # bulk `--limit 1000` fetch. The bulk approach silently misses merges on repos
 # whose merge history exceeds the limit; per-branch queries scale with the local
 # candidate count, not the repo's PR history, and stay accurate on huge repos.
-# Each match still requires the merged PR's headRefOid to equal the local
-# branch tip — otherwise the local branch carries commits beyond what was
-# merged and is unsafe to auto-delete.
+# Queries run in parallel (bounded concurrency) so wall-clock time stays
+# reasonable even with hundreds of candidates. Each match still requires the
+# merged PR's headRefOid to equal the local branch tip — otherwise the local
+# branch carries commits beyond what was merged and is unsafe to auto-delete.
 _git-github-merged-local-branches () {
     local main_branch="$1"
     shift
@@ -913,18 +914,54 @@ _git-github-merged-local-branches () {
     command -v gh >/dev/null 2>&1 || return 0
     (( $# > 0 )) || return 0
 
-    local branch local_oid pr_oid
+    # Snapshot all candidate local tip OIDs in a single ref walk, instead of
+    # one `git rev-parse` per branch. Needed for the safety match below.
+    local -A candidate_set local_oid_by_branch
+    local branch oid
     for branch in "$@"; do
-        [[ -n "$branch" ]] || continue
-
-        local_oid=$(git rev-parse --verify "refs/heads/$branch" 2>/dev/null) || continue
-        [[ -n "$local_oid" ]] || continue
-
-        pr_oid=$(gh pr list --state merged --head "$branch" --base "$main_branch" --limit 1 --json headRefOid --jq '.[].headRefOid' 2>/dev/null) || continue
-        [[ -n "$pr_oid" ]] || continue
-
-        [[ "$local_oid" == "$pr_oid" ]] && print -r -- "$branch"
+        [[ -n "$branch" ]] && candidate_set[$branch]=1
     done
+    while IFS=$'\t' read -r branch oid; do
+        [[ -n "${candidate_set[$branch]-}" ]] && local_oid_by_branch[$branch]="$oid"
+    done < <(git for-each-ref --format=$'%(refname:short)\t%(objectname)' refs/heads 2>/dev/null)
+
+    (( ${#local_oid_by_branch} > 0 )) || return 0
+
+    local total=${#local_oid_by_branch}
+    print -r -- "  querying GitHub for $total candidate branch(es) (parallel)..." >&2
+
+    local tmpfile
+    tmpfile=$(mktemp "${TMPDIR:-/tmp}/git-shorthand-gh.XXXXXX" 2>/dev/null) || return 0
+
+    # Background each `gh` call, capping outstanding jobs to keep us well below
+    # GitHub's secondary rate limit. Each writes a "<branch>\t<oid>" line on
+    # success; the shared tmpfile is safe because each line is well under
+    # PIPE_BUF (atomic append). `wait` between batches is coarse but simple.
+    local concurrency=16
+    local active=0
+
+    for branch in "${(@k)local_oid_by_branch}"; do
+        {
+            local merged_oid
+            merged_oid=$(gh pr list --state merged --head "$branch" --base "$main_branch" --limit 1 --json headRefOid --jq '.[].headRefOid' 2>/dev/null)
+            [[ -n "$merged_oid" ]] && print -r -- "$branch	$merged_oid" >> "$tmpfile"
+        } &
+
+        (( active += 1 ))
+        if (( active >= concurrency )); then
+            wait
+            active=0
+        fi
+    done
+    wait
+
+    local pr_branch pr_oid
+    while IFS=$'\t' read -r pr_branch pr_oid; do
+        [[ -n "$pr_branch" && -n "$pr_oid" ]] || continue
+        [[ "${local_oid_by_branch[$pr_branch]-}" == "$pr_oid" ]] && print -r -- "$pr_branch"
+    done < "$tmpfile"
+
+    rm -f "$tmpfile"
 }
 
 # List local branch names stale relative to origin's main branch: upstream gone, merged into

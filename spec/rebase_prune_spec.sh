@@ -166,6 +166,7 @@ Describe 'gbprune (prune merged branches)'
 
     When call gbprune
     The output should include 'git branch -D squashed'
+    The stderr should include 'querying GitHub'
   End
 
   It 'force-deletes branches whose net patch is already on main'
@@ -175,6 +176,7 @@ Describe 'gbprune (prune merged branches)'
 
     When call gbprune
     The output should include 'git branch -D patch-equivalent'
+    The stderr should include 'querying GitHub'
   End
 
   It 'does not delete a branch when GitHub merged an older tip with the same branch name'
@@ -185,6 +187,7 @@ Describe 'gbprune (prune merged branches)'
 
     When call gbprune
     The output should not include 'git branch -D squashed'
+    The stderr should include 'querying GitHub'
   End
 End
 
