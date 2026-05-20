@@ -1025,31 +1025,46 @@ _git-stale-local-branches () {
 
     # 4. Patch-id fallback: catches non-PR merges (cherry-picks, manual squashes
     # without a PR) on whatever the gh check couldn't classify. Skipped
-    # entirely when gh handled all remaining candidates, which is the common
-    # case in GitHub-centric workflows.
-    local -A main_patch_ids_by_base
-    local patch_info merge_base branch_patch main_patch_ids
-    for branch in "${(@k)candidate_map}"; do
-        [[ -n "${stale_map[$branch]-}" ]] && continue
+    # entirely when `gh` is available — gh's per-branch query already covers
+    # squash merges much faster, and the `git log -p merge_base..main` step
+    # below generates the full diff of every commit since each branch
+    # diverged from main, which can take many seconds per unique merge-base
+    # on large repos. Users without gh still get patch-id as a fallback so
+    # squash merges are detected somehow. The
+    # `_GIT_SHORTHAND_TEST_FORCE_PATCH_ID` env var is an internal hook for
+    # specs to exercise this branch without removing the gh PATH shim.
+    if [[ -n "${_GIT_SHORTHAND_TEST_FORCE_PATCH_ID:-}" ]] || ! command -v gh >/dev/null 2>&1; then
+        local -a patch_id_candidates
+        for branch in "${(@k)candidate_map}"; do
+            [[ -z "${stale_map[$branch]-}" ]] && patch_id_candidates+=("$branch")
+        done
 
-        if git diff --quiet "$main_ref" "$branch" 2>/dev/null; then
-            stale_map[$branch]=1
-            continue
+        if (( ${#patch_id_candidates} > 0 )); then
+            print -r -- "  comparing patch-ids for ${#patch_id_candidates} branch(es) (no gh available)..." >&2
+
+            local -A main_patch_ids_by_base
+            local patch_info merge_base branch_patch main_patch_ids
+            for branch in "${patch_id_candidates[@]}"; do
+                if git diff --quiet "$main_ref" "$branch" 2>/dev/null; then
+                    stale_map[$branch]=1
+                    continue
+                fi
+
+                patch_info=$(_git-local-branch-patch-id "$branch" "$main_ref") || continue
+                merge_base="${patch_info%%$'\t'*}"
+                branch_patch="${patch_info#*$'\t'}"
+
+                if (( ! ${+main_patch_ids_by_base[$merge_base]} )); then
+                    main_patch_ids=$(git log --no-merges --format=format:%H -p "$merge_base..$main_ref" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{ print $1 }')
+                    main_patch_ids_by_base[$merge_base]=$'\n'"$main_patch_ids"$'\n'
+                fi
+
+                if [[ "${main_patch_ids_by_base[$merge_base]}" == *$'\n'"$branch_patch"$'\n'* ]]; then
+                    stale_map[$branch]=1
+                fi
+            done
         fi
-
-        patch_info=$(_git-local-branch-patch-id "$branch" "$main_ref") || continue
-        merge_base="${patch_info%%$'\t'*}"
-        branch_patch="${patch_info#*$'\t'}"
-
-        if (( ! ${+main_patch_ids_by_base[$merge_base]} )); then
-            main_patch_ids=$(git log --no-merges --format=format:%H -p "$merge_base..$main_ref" 2>/dev/null | git patch-id --stable 2>/dev/null | awk '{ print $1 }')
-            main_patch_ids_by_base[$merge_base]=$'\n'"$main_patch_ids"$'\n'
-        fi
-
-        if [[ "${main_patch_ids_by_base[$merge_base]}" == *$'\n'"$branch_patch"$'\n'* ]]; then
-            stale_map[$branch]=1
-        fi
-    done
+    fi
 
     local -A printed_map
     for branch in "${candidates[@]}"; do

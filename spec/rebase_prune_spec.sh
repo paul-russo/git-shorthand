@@ -169,14 +169,18 @@ Describe 'gbprune (prune merged branches)'
     The stderr should include 'querying GitHub'
   End
 
-  It 'force-deletes branches whose net patch is already on main'
+  It 'force-deletes branches whose net patch is already on main (patch-id fallback when gh is unavailable)'
     GBPRUNE_EXTRA_BRANCH='patch-equivalent'
     GBPRUNE_PATCH_EQ_BRANCH='patch-equivalent'
-    export GBPRUNE_EXTRA_BRANCH GBPRUNE_PATCH_EQ_BRANCH
+    # Patch-id is the no-gh fallback path. Forcing it via the internal env
+    # hook exercises the branch without removing the gh PATH shim that
+    # ShellSpec installs.
+    _GIT_SHORTHAND_TEST_FORCE_PATCH_ID=1
+    export GBPRUNE_EXTRA_BRANCH GBPRUNE_PATCH_EQ_BRANCH _GIT_SHORTHAND_TEST_FORCE_PATCH_ID
 
     When call gbprune
     The output should include 'git branch -D patch-equivalent'
-    The stderr should include 'querying GitHub'
+    The stderr should include 'comparing patch-ids'
   End
 
   It 'does not delete a branch when GitHub merged an older tip with the same branch name'
