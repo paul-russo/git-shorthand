@@ -63,7 +63,7 @@ These commands work with either `master` or `main` branches automatically:
 - `gfmnb <branch>` - Fetch main, then create new branch from it
 - `gpm` - Pull from main
 - `gprm` - Fetch main and rebase current branch on it
-- `gbprune` - Fetch with prune, then force-delete local branches whose changes are fully in main (handles gone upstream, regular merge, rebase merge, equivalent patch/tree changes, and squash-merged GitHub PRs when `gh` is available); prints progress and a summary of deleted/failed branches
+- `gbprune` - Fetch with prune, then force-delete local branches whose changes are fully in main (handles gone upstream, regular merge, rebase merge, equivalent patch/tree changes, and squash-merged GitHub PRs when `gh` is available); prints progress and a summary of deleted/failed branches. If a stale branch is held by a linked worktree, the worktree is auto-released with `trash` first when its working tree is clean; dirty worktrees are skipped with a clear message so uncommitted work is never destroyed
 - `gpbprune` - Pull, then `gbprune` (update current branch, then clean merged local branches)
 - `gwtprune` - Release pool slots whose branches are stale (detach HEAD, delete the stale branch). Slots stay in the pool with their `node_modules` intact; see [Worktree Operations](#worktree-operations) below.
 

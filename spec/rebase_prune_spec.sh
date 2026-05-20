@@ -30,6 +30,40 @@ Describe 'gbprune (prune merged branches)'
         printf '%s\n' "git $*"
         return 0
         ;;
+      worktree)
+        case "${2:-}" in
+          list)
+            # GBPRUNE_WT_PORCELAIN lets specs inject `git worktree list
+            # --porcelain` output to exercise the "branch held by worktree"
+            # path. Empty by default (no linked worktrees). Append a
+            # trailing newline because `$(printf ...)` strips them, and
+            # the plugin's read loop needs one to flush the final record.
+            if [[ -n "${GBPRUNE_WT_PORCELAIN:-}" ]]; then
+              printf '%s\n' "$GBPRUNE_WT_PORCELAIN"
+            fi
+            ;;
+          prune)
+            return 0
+            ;;
+          *)
+            printf '%s\n' "git $*"
+            ;;
+        esac
+        return 0
+        ;;
+      -C)
+        # Handle `git -C <path> status --porcelain` for the held-worktree
+        # cleanliness probe. Specs set GBPRUNE_DIRTY_WT_PATH to one
+        # worktree path that should report dirty; everything else is clean.
+        if [[ "${3:-}" = "status" ]]; then
+          if [[ -n "${GBPRUNE_DIRTY_WT_PATH:-}" && "$2" = "$GBPRUNE_DIRTY_WT_PATH" ]]; then
+            printf ' M somefile\n'
+          fi
+          return 0
+        fi
+        printf '%s\n' "git $*"
+        return 0
+        ;;
       rev-parse)
         if [[ "${2:-}" = "--verify" ]]; then
           case "${3:-}" in
@@ -142,6 +176,16 @@ Describe 'gbprune (prune merged branches)'
     esac
   End
 
+  Mock trash
+    # Default mock: silently succeeds. Specs that need failure override
+    # by exporting GBPRUNE_TRASH_FAIL_PATH and we honor it here.
+    if [[ -n "${GBPRUNE_TRASH_FAIL_PATH:-}" && "$1" = "$GBPRUNE_TRASH_FAIL_PATH" ]]; then
+      return 1
+    fi
+    printf '%s\n' "trash $*"
+    return 0
+  End
+
   It 'fetches with prune and force-deletes branches fully merged into main'
     When call gbprune
     The output should include 'gbprune: fetching remotes with prune...'
@@ -192,6 +236,33 @@ Describe 'gbprune (prune merged branches)'
     When call gbprune
     The output should not include 'git branch -D squashed'
     The stderr should include 'querying GitHub'
+  End
+
+  It 'releases a clean worktree holding a stale branch, then deletes the branch'
+    # `gone` is marked stale by the upstream-gone check. Pretend a linked
+    # worktree at /tmp/wt-gone is holding it, with a clean working tree.
+    GBPRUNE_WT_PORCELAIN=$(printf 'worktree /tmp/wt-gone\nHEAD abc\nbranch refs/heads/gone\n\n')
+    export GBPRUNE_WT_PORCELAIN
+
+    When call gbprune
+    The output should include 'releasing clean worktree /tmp/wt-gone (branch: gone)'
+    The output should include 'trash /tmp/wt-gone'
+    The output should include 'git branch -D gone'
+    The output should include 'released 1 worktree(s)'
+  End
+
+  It 'skips a stale branch held by a dirty worktree without destroying changes'
+    # Same setup as above, but the worktree reports modifications.
+    GBPRUNE_WT_PORCELAIN=$(printf 'worktree /tmp/wt-gone-dirty\nHEAD abc\nbranch refs/heads/gone\n\n')
+    GBPRUNE_DIRTY_WT_PATH='/tmp/wt-gone-dirty'
+    export GBPRUNE_WT_PORCELAIN GBPRUNE_DIRTY_WT_PATH
+
+    When call gbprune
+    The output should include 'skipping gone — held by dirty worktree /tmp/wt-gone-dirty'
+    The output should not include 'trash /tmp/wt-gone-dirty'
+    The output should not include 'git branch -D gone'
+    The output should include 'failed 1'
+    The status should be failure
   End
 End
 

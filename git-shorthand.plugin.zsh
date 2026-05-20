@@ -1091,6 +1091,12 @@ _git-local-branch-is-stale () {
 
 # Prune local branches that have been fully merged into main (by any method).
 # Handles: upstream gone, regular merge, squash merge, rebase merge.
+#
+# When a stale branch is still held by a linked worktree, `git branch -D`
+# refuses to delete it. Auto-handle that case here: if the worktree's working
+# tree is clean we trash the directory, prune the worktree metadata, and
+# retry the delete. Dirty worktrees are skipped with a clear message so
+# uncommitted work is never silently destroyed.
 gbprune () {
     print -r -- "gbprune: fetching remotes with prune..."
     git fetch --prune || return 1
@@ -1098,10 +1104,62 @@ gbprune () {
     local current branch
     current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
 
+    # Map "branch -> worktree path" for every linked worktree so we can detect
+    # held branches without re-scanning per stale branch. Skip the main
+    # worktree's HEAD (`current` already excludes it from the stale list).
+    typeset -A worktree_by_branch
+    local wt_path="" wt_branch="" wt_detached=0
+    while IFS= read -r line; do
+        if [[ -z "$line" ]]; then
+            if [[ -n "$wt_path" && -n "$wt_branch" ]] && (( ! wt_detached )); then
+                worktree_by_branch[$wt_branch]="$wt_path"
+            fi
+            wt_path="" wt_branch="" wt_detached=0
+            continue
+        fi
+        case "$line" in
+            "worktree "*) wt_path="${line#worktree }" ;;
+            "branch "*)   wt_branch="${line#branch refs/heads/}" ;;
+            detached)     wt_detached=1 ;;
+        esac
+    done < <(git worktree list --porcelain)
+    if [[ -n "$wt_path" && -n "$wt_branch" ]] && (( ! wt_detached )); then
+        worktree_by_branch[$wt_branch]="$wt_path"
+    fi
+
     print -r -- "gbprune: checking local branches..."
-    local deleted_branches=0 failed_branches=0
+    local deleted_branches=0 failed_branches=0 released_worktrees=0
     for branch in "${(@f)$(_git-stale-local-branches "$current")}"; do
         [[ -z "$branch" ]] && continue
+
+        local holder="${worktree_by_branch[$branch]-}"
+        if [[ -n "$holder" ]]; then
+            local holder_status
+            holder_status=$(git -C "$holder" status --porcelain 2>/dev/null)
+
+            if [[ -n "$holder_status" ]]; then
+                print -r -- "gbprune: skipping $branch — held by dirty worktree $holder"
+                (( failed_branches += 1 ))
+                continue
+            fi
+
+            if ! command -v trash >/dev/null 2>&1; then
+                print -r -- "gbprune: skipping $branch — held by worktree $holder (\`trash\` not installed; release manually with \`gwtd\` or \`git worktree remove\`)"
+                (( failed_branches += 1 ))
+                continue
+            fi
+
+            print -r -- "gbprune: releasing clean worktree $holder (branch: $branch)"
+            if trash "$holder"; then
+                git worktree prune >/dev/null 2>&1
+                (( released_worktrees += 1 ))
+            else
+                print -r -- "gbprune: trash failed for $holder; skipping $branch"
+                (( failed_branches += 1 ))
+                continue
+            fi
+        fi
+
         print -r -- "gbprune: deleting branch $branch"
         if git branch -D "$branch"; then
             (( deleted_branches += 1 ))
@@ -1110,7 +1168,9 @@ gbprune () {
         fi
     done
 
-    print -r -- "gbprune: deleted $deleted_branches branch(es), failed $failed_branches"
+    local summary="gbprune: deleted $deleted_branches branch(es), failed $failed_branches"
+    (( released_worktrees > 0 )) && summary+=", released $released_worktrees worktree(s)"
+    print -r -- "$summary"
     (( failed_branches == 0 ))
 }
 
