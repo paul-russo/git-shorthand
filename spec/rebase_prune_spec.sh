@@ -28,6 +28,14 @@ Describe 'gbprune (prune merged branches)'
         ;;
       fetch)
         printf '%s\n' "git $*"
+        # GBPRUNE_FETCH_FAIL=1 makes fetch always fail (covers the
+        # "transient remote-tracking ref-lock race never clears" path so
+        # we can assert gbprune continues with local state instead of
+        # aborting).
+        if [[ -n "${GBPRUNE_FETCH_FAIL:-}" ]]; then
+          printf 'error: cannot lock ref: simulated\n' >&2
+          return 1
+        fi
         return 0
         ;;
       worktree)
@@ -163,6 +171,11 @@ Describe 'gbprune (prune merged branches)'
     esac
   End
 
+  Mock sleep
+    # Keep the retry loop fast in the test suite.
+    return 0
+  End
+
   It 'fetches with prune and force-deletes branches fully merged into main'
     When call gbprune
     The output should include 'gbprune: fetching remotes with prune...'
@@ -256,6 +269,25 @@ Describe 'gbprune (prune merged branches)'
     The output should include 'failed 1'
     The stderr should include 'has uncommitted changes'
     The status should be failure
+  End
+
+  It 'continues with local state when fetch keeps failing on a ref-lock race'
+    # Simulate the "error: cannot lock ref ... is at X but expected Y"
+    # failure repeating across all retries. gbprune should still run the
+    # local prune work rather than aborting outright — the detection
+    # functions just operate against whatever's already in the local
+    # remote-tracking refs.
+    GBPRUNE_FETCH_FAIL=1
+    export GBPRUNE_FETCH_FAIL
+
+    When call gbprune
+    The output should include 'gbprune: fetching remotes with prune...'
+    The output should include 'gbprune: checking local branches...'
+    The output should include 'git branch -D gone'
+    The stderr should include 'fetch attempt 1/3 failed'
+    The stderr should include 'fetch attempt 2/3 failed'
+    The stderr should include 'fetch failed after 3 attempts'
+    The stderr should include 'continuing with local state'
   End
 End
 

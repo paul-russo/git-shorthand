@@ -1089,6 +1089,39 @@ _git-local-branch-is-stale () {
     return 1
 }
 
+# Helper: best-effort `git fetch --prune`. Retries with short backoff on
+# failure, since the most common cause on busy repos is a transient
+# remote-tracking ref-lock race — another `git fetch` (IDE background sync,
+# another shell, a worktree operation, a `gbprune` in a sibling worktree)
+# updates `refs/remotes/origin/<ref>` between when our fetch reads the
+# expected value and when it tries to write the new one, surfacing as
+# "error: cannot lock ref ...: is at X but expected Y". A 1s/2s backoff
+# usually lets the concurrent writer finish.
+#
+# If all retries fail (network down, auth gone, persistent lock), returns 0
+# anyway after a clear warning: the caller's prune work still runs against
+# whatever local state we have, and the only cost is potentially missing
+# merges from the very latest commits. The branch detection cares about
+# what's on `origin/<main>` locally, not whether this exact invocation
+# fetched.
+_git-fetch-prune-best-effort () {
+    local label="${1:-gbprune}"
+    local attempts=3 attempt
+
+    for (( attempt = 1; attempt <= attempts; attempt++ )); do
+        if git fetch --prune; then
+            return 0
+        fi
+        if (( attempt < attempts )); then
+            print -r -- "$label: fetch attempt $attempt/$attempts failed (likely transient ref-lock race); retrying in ${attempt}s..." >&2
+            sleep "$attempt"
+        fi
+    done
+
+    print -r -- "$label: fetch failed after $attempts attempts; continuing with local state — recent merges may not be detected this run" >&2
+    return 0
+}
+
 # Prune local branches that have been fully merged into main (by any method).
 # Handles: upstream gone, regular merge, squash merge, rebase merge.
 #
@@ -1101,7 +1134,7 @@ _git-local-branch-is-stale () {
 # a clear message, so uncommitted work is never silently destroyed.
 gbprune () {
     print -r -- "gbprune: fetching remotes with prune..."
-    git fetch --prune || return 1
+    _git-fetch-prune-best-effort gbprune
 
     local current branch
     current=$(git rev-parse --abbrev-ref HEAD 2>/dev/null)
@@ -1179,7 +1212,7 @@ gpbprune () {
 # with `git worktree prune -v` to clean up administrative cruft.
 gwtprune () {
     print -r -- "gwtprune: fetching remotes with prune..."
-    git fetch --prune || return 1
+    _git-fetch-prune-best-effort gwtprune
 
     local -a slot_paths slot_branches
     local slot branch state
