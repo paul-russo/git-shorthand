@@ -804,6 +804,12 @@ gwtcd () {
 # List the pool: main repo row, then slots sorted by mtime descending. Columns
 # are BRANCH | STATE | LAST MODIFIED | PATH.
 gwtl () {
+    # Disable job-control notifications for the duration of this function:
+    # the parallel collection below uses `{ ... } &`, and from an
+    # interactive shell with MONITOR on that prints `[N] PID` / `[N] done`
+    # noise per slot. `local_options` reverts both flags on function exit.
+    setopt local_options no_monitor no_notify
+
     # Default to fast mode: skip the per-slot dirty check, which on a
     # multi-gigabyte monorepo dominates wall time even when parallelized
     # (the kernel saturates on simultaneous tree scans across slots).
@@ -1019,6 +1025,11 @@ _git-github-merged-local-branches () {
 
     command -v gh >/dev/null 2>&1 || return 0
     (( $# > 0 )) || return 0
+
+    # gbprune is invoked interactively, so suppress zsh's `[N] PID` /
+    # `[N] done` job-control noise from the parallel `gh` calls below.
+    # Reverted on function exit via local_options.
+    setopt local_options no_monitor no_notify
 
     # Snapshot all candidate local tip OIDs in a single ref walk, instead of
     # one `git rev-parse` per branch. Needed for the safety match below.
