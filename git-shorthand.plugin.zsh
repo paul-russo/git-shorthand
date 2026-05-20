@@ -170,7 +170,13 @@ _git-wt-seed-node-modules () {
 # Helper: use mise-pinned tools when available, while still working in small repos without mise.
 _git-wt-run-with-optional-mise () {
     if command -v mise >/dev/null 2>&1; then
-        mise exec -- "$@"
+        # `--yes` auto-confirms mise's "trust this config?" TUI prompt, which
+        # would otherwise block install when activating a slot in a freshly
+        # checked-out branch whose mise.toml hasn't been seen before. The
+        # slot's config is the user's own repo at a branch they just asked us
+        # to activate, so silent trust matches the rest of the activation
+        # flow (which also runs the project's install scripts unprompted).
+        mise --yes exec -- "$@"
         return
     fi
 
