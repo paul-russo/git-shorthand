@@ -27,7 +27,7 @@ Custom completion is also included for shorthand commands that take branch/workt
 
 `gwtcd` completes against both pool slot names (`tree-1`, `tree-2`, …) and the branches currently checked out in slots; `gwtd` completes only those branches that actually sit in a slot.
 
-Branch/worktree name completion uses the same slash-aware matching as zsh’s stock `_git` completion, so names like `cursor/example-branch` complete correctly (not only one path segment at a time).
+Branch/worktree name completion uses the same slash-aware matching as zsh’s stock `_git` completion, so names like `example/example-branch` complete correctly (not only one path segment at a time).
 
 ## Definitions
 | Shorthand | Meaning |
@@ -80,6 +80,7 @@ Worktrees live in a recycled **pool** under a `{repo_name}-worktrees/` sibling d
   - `dirty` — uncommitted or untracked changes. Never auto-reused.
   - `current` — your cwd is inside the slot. Never auto-released or auto-reused.
 - **Lockfile-aware install.** Each activation compares the slot's previous HEAD against the new HEAD on the detected lockfile (`pnpm-lock.yaml` > `yarn.lock` > `package-lock.json`). If they match, the install step is skipped. Pass `--no-install` to skip unconditionally.
+- **Pool post-checkout hook.** Optionally place an executable `post-checkout` script at the root of the `{repo}-worktrees/` directory (next to `tree-1`, `tree-2`, …). It runs after each activation when install is enabled, including when the root lockfile install was skipped. The script receives the slot path and previous HEAD as arguments (`$1`, `$2`) and may use `GWT_SLOT`, `GWT_OLD_HEAD`, and `GWT_MAIN_LOCKFILE_UNCHANGED` (`1` when root install was skipped). Use this for repo-specific extra installs (e.g. a nested `npm ci` under `vscode/` while the monorepo root uses pnpm).
 
 ### Commands
 - `gwta [--base <ref>] [--no-install] <branch>` — allocate a slot, create `<branch>` from `--base` (default `$(git-main-branch)`), conditionally install, and `cd` in. If `<branch>` is already in a slot, just `cd` there.

@@ -249,6 +249,29 @@ _git-wt-lockfile-unchanged () {
     git -C "$slot" diff --quiet "$old_head" HEAD -- "$lockfile" 2>/dev/null
 }
 
+# Helper: run an optional pool-local post-checkout script after activation.
+# Looks for an executable `post-checkout` at the worktrees base (sibling to tree-N
+# slots), not inside the git repo. Args: slot path, old HEAD, main_lockfile_unchanged.
+_git-wt-run-post-checkout () {
+    local slot="$1"
+    local old_head="$2"
+    local main_lockfile_unchanged="$3"
+
+    local wt_base hook
+    wt_base=$(_git-wt-base) || return 0
+    hook="$wt_base/post-checkout"
+    [[ -x "$hook" ]] || return 0
+
+    print -r -- "gwtpool: running post-checkout" >&2
+    (
+        cd "$slot" || exit 1
+        export GWT_SLOT="$slot"
+        export GWT_OLD_HEAD="$old_head"
+        export GWT_MAIN_LOCKFILE_UNCHANGED="$main_lockfile_unchanged"
+        _git-wt-run-with-optional-mise "$hook" "$slot" "$old_head"
+    ) || return 1
+}
+
 # Helper: emit pool slot paths matching tree-<int>, sorted by N ascending.
 # sort -V handles tree-1, tree-2, ..., tree-10 in natural order. The directory
 # glob is broad on purpose (tree-*); the regex filter limits to numeric suffixes
@@ -602,11 +625,14 @@ _git-wt-activate-slot () {
     git -C "$slot" "$@" || return 1
 
     if (( run_install )); then
+        local main_lockfile_unchanged=0
         if _git-wt-lockfile-unchanged "$slot" "$old_head"; then
+            main_lockfile_unchanged=1
             print -r -- "gwtpool: lockfile unchanged, skipping install"
         else
             _git-wt-install-deps "$slot" || return 1
         fi
+        _git-wt-run-post-checkout "$slot" "$old_head" "$main_lockfile_unchanged" || return 1
     fi
 }
 

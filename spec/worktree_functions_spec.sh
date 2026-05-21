@@ -589,7 +589,49 @@ Describe '_git-wt-prompt-full-pool'
   End
 End
 
+Describe '_git-wt-run-post-checkout'
+  BeforeEach cleanup_pool_base
+  BeforeEach 'mkdir -p /tmp/git-shorthand-spec-worktrees/tree-1'
+
+  _git-wt-base() {
+    print -r -- "$GIT_WT_SPEC_BASE"
+  }
+
+  It 'is a no-op when post-checkout is missing'
+    When call _git-wt-run-post-checkout "$GIT_WT_SPEC_BASE/tree-1" abc123 0
+    The status should be success
+    The stderr should not include 'running post-checkout'
+  End
+
+  It 'runs the pool post-checkout hook with args and env'
+    cat >"$GIT_WT_SPEC_BASE/post-checkout" <<'EOF'
+#!/bin/sh
+printf 'hook slot=%s old=%s main_unchanged=%s\n' "$1" "$2" "${GWT_MAIN_LOCKFILE_UNCHANGED:-}"
+EOF
+    chmod +x "$GIT_WT_SPEC_BASE/post-checkout"
+
+    When call _git-wt-run-post-checkout "$GIT_WT_SPEC_BASE/tree-1" deadbeef 1
+    The status should be success
+    The stderr should include 'running post-checkout'
+    The output should eq "hook slot=$GIT_WT_SPEC_BASE/tree-1 old=deadbeef main_unchanged=1"
+  End
+
+  It 'fails when post-checkout exits non-zero'
+    cat >"$GIT_WT_SPEC_BASE/post-checkout" <<'EOF'
+#!/bin/sh
+exit 1
+EOF
+    chmod +x "$GIT_WT_SPEC_BASE/post-checkout"
+
+    When call _git-wt-run-post-checkout "$GIT_WT_SPEC_BASE/tree-1" abc123 0
+    The status should be failure
+    The stderr should include 'running post-checkout'
+  End
+End
+
 Describe '_git-wt-activate-slot'
+  _git-wt-run-post-checkout() { :; }
+
   It 'records old HEAD, runs the checkout, and runs install when lockfile changed'
     _git-wt-lockfile-unchanged() { return 1; }
     _git-wt-install-deps() { print -r -- "install $*"; }
@@ -614,9 +656,10 @@ Describe '_git-wt-activate-slot'
     The output should include 'install /tmp/tree-1'
   End
 
-  It 'skips install when the lockfile is unchanged'
+  It 'skips install when the lockfile is unchanged but still runs post-checkout'
     _git-wt-lockfile-unchanged() { return 0; }
     _git-wt-install-deps() { print -r -- "install $*"; }
+    _git-wt-run-post-checkout() { print -r -- "post-checkout $*"; }
 
     Mock git
       case "$*" in
@@ -632,6 +675,7 @@ Describe '_git-wt-activate-slot'
     When call _git-wt-activate-slot /tmp/tree-1 1 checkout feature
     The output should include 'lockfile unchanged, skipping install'
     The output should not include 'install /tmp/tree-1'
+    The output should include 'post-checkout /tmp/tree-1 abc123 1'
   End
 
   It 'skips lockfile-check and install entirely when run_install=0'
@@ -640,6 +684,7 @@ Describe '_git-wt-activate-slot'
       return 1
     }
     _git-wt-install-deps() { print -r -- "install $*"; }
+    _git-wt-run-post-checkout() { print -r -- "post-checkout $*"; }
 
     Mock git
       case "$*" in
@@ -651,6 +696,7 @@ Describe '_git-wt-activate-slot'
     When call _git-wt-activate-slot /tmp/tree-1 0 checkout feature
     The output should not include 'lockfile check should not run'
     The output should not include 'install'
+    The output should not include 'post-checkout'
   End
 End
 

@@ -4,7 +4,7 @@ Describe 'zsh branch completion (slashes in names)'
   Mock git
     case "$1" in
       for-each-ref)
-        printf '%s\n' 'main' 'cursor/example-branch'
+        printf '%s\n' 'main' 'example/example-branch'
         return 0
         ;;
       *)
