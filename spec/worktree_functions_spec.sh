@@ -296,6 +296,8 @@ Describe '_git-wt-slot-state'
         "rev-parse --show-toplevel")
           print -r -- /tmp/main-repo
           ;;
+        *update-index*)
+          ;;
         *diff-index*)
           # exit 1 = differences detected.
           return 1
@@ -312,6 +314,8 @@ Describe '_git-wt-slot-state'
       case "$*" in
         "rev-parse --show-toplevel")
           print -r -- /tmp/main-repo
+          ;;
+        *update-index*)
           ;;
         *diff-index*)
           # exit 128 = no HEAD / real error; must not be classified dirty.
@@ -333,6 +337,8 @@ Describe '_git-wt-slot-state'
         "rev-parse --show-toplevel")
           print -r -- /tmp/main-repo
           ;;
+        *update-index*)
+          ;;
         *diff-index*)
           ;;
         *symbolic-ref*)
@@ -351,6 +357,8 @@ Describe '_git-wt-slot-state'
         "rev-parse --show-toplevel")
           print -r -- /tmp/main-repo
           ;;
+        *update-index*)
+          ;;
         *diff-index*)
           ;;
         *symbolic-ref*)
@@ -363,13 +371,44 @@ Describe '_git-wt-slot-state'
     The output should eq 'idle'
   End
 
-  It 'skips the diff-index call when the skip-dirty arg is set'
-    # diff-index would return 1 (dirty) here — if the caller asked to skip
-    # the check, we must not invoke it and the slot must come back active.
+  It 'runs update-index --refresh before diff-index when checking dirty'
+    rm -f /tmp/git-shorthand-spec-refresh-seen
     Mock git
       case "$*" in
         "rev-parse --show-toplevel")
           print -r -- /tmp/main-repo
+          ;;
+        *update-index*)
+          : > /tmp/git-shorthand-spec-refresh-seen
+          ;;
+        *diff-index*)
+          if [[ ! -f /tmp/git-shorthand-spec-refresh-seen ]]; then
+            echo "BUG: diff-index before update-index --refresh" >&2
+            return 1
+          fi
+          ;;
+        *symbolic-ref*)
+          print -r -- 'feature/foo'
+          ;;
+      esac
+    End
+
+    When call _git-wt-slot-state /tmp/git-shorthand-spec-slot-state
+    The output should eq 'active'
+    The stderr should be blank
+  End
+
+  It 'skips the dirty check when the skip-dirty arg is set'
+    # diff-index would return 1 (dirty) here — if the caller asked to skip
+    # the check, we must not invoke refresh or diff-index.
+    Mock git
+      case "$*" in
+        "rev-parse --show-toplevel")
+          print -r -- /tmp/main-repo
+          ;;
+        *update-index*)
+          echo "BUG: update-index should not be called when skip-dirty is set" >&2
+          return 1
           ;;
         *diff-index*)
           echo "BUG: diff-index should not be called when skip-dirty is set" >&2

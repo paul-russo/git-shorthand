@@ -355,6 +355,11 @@ _git-wt-slot-state () {
     fi
 
     if [[ -z "$skip_dirty" ]]; then
+        # Reconcile index stat cache before diff-index (same idea as `git status`).
+        # Without this, diff-index can report dirty when only mtimes drifted or
+        # fsmonitor left the index stale — while status looks clean.
+        git -C "$slot" update-index --refresh >/dev/null 2>&1 || true
+
         # diff-index exit codes: 0 = clean, 1 = tracked-file changes vs HEAD,
         # >1 = real error (e.g. no HEAD on a brand-new worktree). Only treat
         # exit 1 as dirty so a fresh detached slot doesn't get mislabeled.
