@@ -942,7 +942,22 @@ Describe 'gwtcd (cd by fuzzy match)'
     The variable GWTCD_CD_PATH should eq '/tmp/main-repo'
   End
 
+  It 'cds into the primary worktree when the query matches the root branch'
+    _git-main-worktree() { print -r -- /tmp/main-repo; }
+    _git-wt-pool-slots() { printf '/tmp/wt/tree-1\n'; }
+    _git-wt-slot-branch() {
+      case "$1" in
+        /tmp/main-repo) print -r -- 'main' ;;
+        */tree-1) print -r -- 'feature/foo' ;;
+      esac
+    }
+
+    When call gwtcd main
+    The variable GWTCD_CD_PATH should eq '/tmp/main-repo'
+  End
+
   It 'cds into a slot when the query matches a slot directory name'
+    _git-main-worktree() { return 1; }
     _git-wt-pool-slots() { printf '/tmp/wt/tree-1\n/tmp/wt/tree-2\n/tmp/wt/tree-3\n'; }
     _git-wt-slot-branch() {
       case "$1" in
@@ -957,6 +972,7 @@ Describe 'gwtcd (cd by fuzzy match)'
   End
 
   It 'cds into a slot when the query matches a branch substring'
+    _git-main-worktree() { return 1; }
     _git-wt-pool-slots() { printf '/tmp/wt/tree-1\n/tmp/wt/tree-2\n'; }
     _git-wt-slot-branch() {
       case "$1" in
@@ -970,6 +986,7 @@ Describe 'gwtcd (cd by fuzzy match)'
   End
 
   It 'fails with a candidate list on ambiguous match'
+    _git-main-worktree() { return 1; }
     _git-wt-pool-slots() { printf '/tmp/wt/tree-1\n/tmp/wt/tree-2\n'; }
     _git-wt-slot-branch() {
       case "$1" in
@@ -985,7 +1002,25 @@ Describe 'gwtcd (cd by fuzzy match)'
     The status should be failure
   End
 
+  It 'reports the root clone as ambiguous when its branch also matches'
+    _git-main-worktree() { print -r -- /tmp/main-repo; }
+    _git-wt-pool-slots() { printf '/tmp/wt/tree-1\n'; }
+    _git-wt-slot-branch() {
+      case "$1" in
+        /tmp/main-repo) print -r -- 'feature/root' ;;
+        */tree-1) print -r -- 'feature/foo' ;;
+      esac
+    }
+
+    When call gwtcd feature
+    The stderr should include 'ambiguous'
+    The stderr should include 'root (feature/root)'
+    The stderr should include 'tree-1 (feature/foo)'
+    The status should be failure
+  End
+
   It 'fails with an available list on no match'
+    _git-main-worktree() { return 1; }
     _git-wt-pool-slots() { printf '/tmp/wt/tree-1\n'; }
     _git-wt-slot-branch() { print -r -- 'feature/foo'; }
 
@@ -996,6 +1031,7 @@ Describe 'gwtcd (cd by fuzzy match)'
   End
 
   It 'fails when no slots exist at all'
+    _git-main-worktree() { return 1; }
     _git-wt-pool-slots() { :; }
 
     When call gwtcd anything

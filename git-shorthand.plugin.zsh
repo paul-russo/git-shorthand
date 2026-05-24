@@ -768,8 +768,10 @@ gwtco () {
 }
 
 # cd into a slot by fuzzy substring match against slot directory names AND branch
-# names. "root" still routes to the primary worktree. Ambiguous matches print the
-# candidate list and fail; no match prints what's available and fails.
+# names. The primary checkout participates as the synthetic "root" slot, so the
+# literal "root" and the branch it currently holds (e.g. "main") both route to
+# it. Ambiguous matches print the candidate list and fail; no match prints
+# what's available and fails.
 gwtcd () {
     local query="$1"
     [[ -n "$query" ]] || {
@@ -777,15 +779,28 @@ gwtcd () {
         return 2
     }
 
+    local main_wt
+    main_wt=$(_git-main-worktree 2>/dev/null)
+
+    # The literal target "root" always routes to the primary checkout.
     if [[ "$query" == "root" ]]; then
-        local main_wt
-        main_wt=$(_git-main-worktree) || return 1
+        [[ -n "$main_wt" ]] || return 1
         cd "$main_wt" || return 1
         return 0
     fi
 
     local -a slot_paths slot_names slot_branches
     local slot
+
+    # Seed the candidate set with the primary checkout so its current branch is
+    # matchable by substring (e.g. `gwtcd main` when root holds main). Listing
+    # it first makes it lead the ambiguity/no-match reports below.
+    if [[ -n "$main_wt" ]]; then
+        slot_paths+=("$main_wt")
+        slot_names+=("root")
+        slot_branches+=("$(_git-wt-slot-branch "$main_wt")")
+    fi
+
     for slot in "${(@f)$(_git-wt-pool-slots)}"; do
         [[ -z "$slot" ]] && continue
         slot_paths+=("$slot")
@@ -1468,9 +1483,10 @@ if [[ -n "${ZSH_VERSION-}" ]]; then
         _wanted branches expl 'slot branch' compadd -M 'r:|/=* r:|=*' -o nosort -a - branches
     }
 
-    # gwtcd accepts a fuzzy substring. We suggest both slot directory names
-    # (tree-N) and the branches currently checked out in slots, plus "root".
-    # The current target is omitted to avoid suggesting a no-op.
+    # gwtcd accepts a fuzzy substring. We suggest slot directory names (tree-N),
+    # the branches currently checked out in slots, the primary checkout's
+    # current branch, and "root". The current target is omitted to avoid
+    # suggesting a no-op.
     _git_shorthand_gwtcd_targets () {
         local current_target
         current_target=$(_git-current-wt-target 2>/dev/null)
@@ -1487,6 +1503,19 @@ if [[ -n "${ZSH_VERSION-}" ]]; then
             ref=$(git -C "$slot" symbolic-ref --quiet --short HEAD 2>/dev/null) || continue
             [[ -n "$ref" ]] && candidates+=("$ref")
         done
+
+        # Offer the primary checkout's branch so `gwtcd main` (or whatever root
+        # holds) completes to the root clone, mirroring gwtcd's matching. Skip
+        # when already in root, where it would only suggest a no-op.
+        if [[ "$current_target" != "root" ]]; then
+            local main_wt
+            main_wt=$(_git-main-worktree 2>/dev/null)
+            if [[ -n "$main_wt" ]]; then
+                ref=$(git -C "$main_wt" symbolic-ref --quiet --short HEAD 2>/dev/null)
+                [[ -n "$ref" ]] && candidates+=("$ref")
+            fi
+        fi
+
         candidates+=("root")
 
         local -a suggestions

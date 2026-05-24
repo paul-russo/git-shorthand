@@ -25,7 +25,7 @@ Custom completion is also included for shorthand commands that take branch/workt
 - `git-obliterate`, `gwta`, `gfmwta`, `gwtco`, `gwtd`, `gwtcd`
 - `gnb`, `gnbpp`, `gfmnb`, `grnb`, `gcobpp`
 
-`gwtcd` completes against both pool slot names (`tree-1`, `tree-2`, …) and the branches currently checked out in slots; `gwtd` completes only those branches that actually sit in a slot.
+`gwtcd` completes against pool slot names (`tree-1`, `tree-2`, …), the branches currently checked out in slots, the primary checkout's current branch, and the literal `root`; `gwtd` completes only those branches that actually sit in a slot.
 
 Branch/worktree name completion uses the same slash-aware matching as zsh’s stock `_git` completion, so names like `example/example-branch` complete correctly (not only one path segment at a time).
 
@@ -86,7 +86,7 @@ Worktrees live in a recycled **pool** under a `{repo_name}-worktrees/` sibling d
 - `gwta [--base <ref>] [--no-install] <branch>` — allocate a slot, create `<branch>` from `--base` (default `$(git-main-branch)`), conditionally install, and `cd` in. If `<branch>` is already in a slot, just `cd` there.
 - `gfmwta [--base <ref>] [--no-install] <branch>` — fetch `origin/$(git-main-branch)` first, then `gwta`.
 - `gwtco [--no-install] <branch>` — allocate a slot and check out an existing branch. Prefers a local branch, falls back to `origin/<branch>` (creates a tracking branch). If `<branch>` is already in a slot, just `cd` there.
-- `gwtcd <fuzzy>` — `cd` into a slot by substring match against slot directory names (`tree-3`) **and** branches currently in slots. `root` always routes to the primary repo. Ambiguous matches print the candidate list and fail; no match prints what is available and fails.
+- `gwtcd <fuzzy>` — `cd` into a slot by substring match against slot directory names (`tree-3`) **and** the branches currently checked out. The primary checkout participates as the synthetic `root` slot, so the literal `root` **and** the branch it currently holds both route to the primary repo (e.g. `gwtcd main` when root has `main` checked out). Ambiguous matches print the candidate list and fail; no match prints what is available and fails.
 - `gwtl [--dirty]` — print the pool as a table sorted by slot mtime descending. Columns: `BRANCH | STATE | LAST MODIFIED | PATH`. The primary repo is pinned at the top with `(main repo)` in the STATE column. By default the dirty check is skipped so listing stays snappy on large monorepos; pass `--dirty` to additionally report which slots have uncommitted tracked-file changes.
 - `gwtd [--delete-branch] [--force] <branch>` — release the slot that currently holds `<branch>`: detach HEAD, optionally also delete the branch. Refreshes the index before the dirty check so release agrees with `git status`. Refuses dirty without `--force`. Always refuses the current slot (cd elsewhere first).
 - `gwtprune` — fetch with prune, then release every pool slot whose branch is stale by the same rules as `gbprune` (detach HEAD and delete the stale branch). Slots stay in the pool. Skips dirty and current slots. Finishes with `git worktree prune -v`.
