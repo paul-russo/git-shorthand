@@ -260,7 +260,7 @@ Describe '_git-wt-slot-branch'
 
     When call _git-wt-slot-branch /tmp/git-shorthand-spec-slot-branch
     The output should eq ''
-    The status should be failure
+    The status should be success
   End
 
   It 'fails when slot directory does not exist'
@@ -369,6 +369,28 @@ Describe '_git-wt-slot-state'
 
     When call _git-wt-slot-state /tmp/git-shorthand-spec-slot-state
     The output should eq 'idle'
+  End
+
+  It 'returns idle when clean and detached under errexit'
+    setopt local_options err_return
+    Mock git
+      case "$*" in
+        "rev-parse --show-toplevel")
+          print -r -- /tmp/main-repo
+          ;;
+        *update-index*)
+          ;;
+        *diff-index*)
+          ;;
+        *symbolic-ref*)
+          return 1
+          ;;
+      esac
+    End
+
+    When call _git-wt-slot-state /tmp/git-shorthand-spec-slot-state
+    The output should eq 'idle'
+    The status should be success
   End
 
   It 'runs update-index --refresh before diff-index when checking dirty'
@@ -625,6 +647,16 @@ Describe '_git-wt-prompt-full-pool'
 
     When call _git-wt-prompt-full-pool
     The status should be failure
+  End
+
+  It 'fails with a clear message when stdin is not a tty and closed'
+    setup_slots
+    When call _git-wt-prompt-full-pool < /dev/null
+    The status should be failure
+    The stderr should include 'stdin is not a tty and input ended'
+    The stderr should include 'pool is full (2 active slot(s))'
+    The stderr should include '1. tree-1 [feature/foo]'
+    The output should be blank
   End
 End
 

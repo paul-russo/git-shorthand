@@ -295,11 +295,14 @@ _git-wt-pool-slots () {
 }
 
 # Helper: branch name checked out in a slot, empty when detached.
+# Returns 0 when the slot exists even if HEAD is detached — symbolic-ref exit 1
+# is normal there and must not trip errexit in callers (e.g. _git-wt-slot-state).
 _git-wt-slot-branch () {
     local slot="$1"
     [[ -d "$slot" ]] || return 1
 
-    git -C "$slot" symbolic-ref --quiet --short HEAD 2>/dev/null
+    git -C "$slot" symbolic-ref --quiet --short HEAD 2>/dev/null || :
+    return 0
 }
 
 # Helper: mtime of a slot path. Used by _git-wt-pick-idle-slot for "oldest first"
@@ -491,7 +494,14 @@ _git-wt-prompt-full-pool () {
 
     print -n -- "Choice: " >&2
     local choice
-    read -r choice
+    if ! read -r choice; then
+        if ! [[ -t 0 ]]; then
+            print -r -- "gwtpool: stdin is not a tty and input ended; cannot prompt for a slot to recycle" >&2
+            print -r -- "gwtpool: release a slot with gwtd, run gwtprune/gbprune, or run from an interactive shell" >&2
+            return 1
+        fi
+        choice=""
+    fi
 
     case "$choice" in
         g|G)

@@ -73,7 +73,7 @@ If you keep work in pool slots, run `gwtprune` before `gbprune` so stale branche
 Worktrees live in a recycled **pool** under a `{repo_name}-worktrees/` sibling directory. Each slot is a long-lived checkout named `tree-1`, `tree-2`, … that keeps its own `node_modules` and build state. Activating a slot means checking a branch out into it; releasing a slot detaches HEAD so it can be reused. Install runs only when the lockfile actually changed between the previous and current HEAD, so common branch hops are nearly instant.
 
 ### Pool model
-- **Pool soft cap.** New slots are created on demand up to `_GIT_WT_POOL_SOFT_CAP` (default `6`). When you ask for another slot after the cap is reached, `gwta`/`gfmwta`/`gwtco` show an interactive picker that lets you (1) pick an active slot to release and reuse, (2) `g` to grow the pool past the cap, or (3) `q` to cancel.
+- **Pool soft cap.** New slots are created on demand up to `_GIT_WT_POOL_SOFT_CAP` (default `6`). When you ask for another slot after the cap is reached and no idle slot is available, `gwta`/`gfmwta`/`gwtco` show an interactive picker that lets you (1) pick an active slot to release and reuse, (2) `g` to grow the pool past the cap, or (3) `q` to cancel. In non-interactive shells (stdin not a TTY and closed before a choice is read) the picker lists occupied slots on stderr and fails with a short hint (`gwtd`, `gwtprune`, or an interactive terminal) instead of exiting silently.
 - **Slot states.**
   - `idle` — detached HEAD, clean working tree. Eligible for reuse.
   - `active` — branch checked out, clean.
