@@ -18,6 +18,11 @@ Currently, the exceptions to these rules are:
 - The 'rename branch' function `grnb`, which is comprised of a sequence of somewhat non-obvious git operations
 - The `git-main-branch` utility function, which dynamically detects whether the repo uses `master` or `main`
 
+## Color output
+Status messages from the worktree and prune commands (`gwta`, `gwtco`, `gwtl`, `gwtd`, `gwtcd`, `gwtprune`, `gbprune`, `gpbprune`, and the internal `gwtpool:` lines) emit ANSI color when stdout/stderr is a TTY. Colors are semantic: command tags (e.g. `gwta:`) are bold cyan, branch refs are yellow, paths are blue, success is green, warnings/dirty state are yellow, errors are red. The `gwtl` table colors the STATE column per state (`active` green, `dirty` bold yellow, `current` bold cyan, `idle` dim).
+
+Color is automatically suppressed when output is redirected to a pipe or file, when `TERM` is `dumb`, and when either `NO_COLOR` (see [no-color.org](https://no-color.org)) or `GIT_SHORTHAND_NO_COLOR` is set.
+
 ## Shell Completions
 When loaded in `zsh` with completion enabled (`compinit`), shorthand commands complete like their underlying `git` subcommands.
 

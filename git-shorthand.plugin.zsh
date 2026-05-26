@@ -3,6 +3,76 @@ git-main-branch () {
     git symbolic-ref refs/remotes/origin/HEAD | sed 's@^refs/remotes/origin/@@'
 }
 
+# ---- Output coloring ---------------------------------------------------------
+# Plugin status messages and the gwtl table get ANSI color when emitted to a
+# TTY. Color is suppressed when any of these hold so plain text reaches files,
+# pipes, dumb terminals, and the test runner:
+#   - NO_COLOR is set (https://no-color.org)
+#   - GIT_SHORTHAND_NO_COLOR is set (plugin-specific opt-out)
+#   - TERM is dumb or unset
+#   - the target stream is not a TTY
+# Helper functions that *return data* on stdout (e.g. _git-wt-slot-state,
+# _git-wt-pool-slots) deliberately stay uncolored so their output remains
+# parseable by callers.
+#
+# Returns success when color should be emitted to fd $1 (default 1/stdout).
+_git-sh-color-on () {
+    [[ -n "${NO_COLOR-}" || -n "${GIT_SHORTHAND_NO_COLOR-}" ]] && return 1
+    case "${TERM-}" in dumb|'') return 1 ;; esac
+    case "${1:-1}" in
+        1) [[ -t 1 ]] || return 1 ;;
+        2) [[ -t 2 ]] || return 1 ;;
+    esac
+    return 0
+}
+
+# Populate $_GS_C_* globals for the appropriate output stream. Callers pass the
+# fd that carries their primary user-facing output (1 for stdout, 2 for stderr).
+# Vars are deliberately globals so we don't pay the cost of dozens of
+# `$(_git-sh-c ...)` subshell invocations per print; each user-facing function
+# re-initializes at the top, so leaking across calls is harmless.
+#
+# Semantic roles:
+#   _GS_C_TAG    bold cyan   - tool prefixes ("gwta:", "gwtpool:", ...)
+#   _GS_C_PATH   blue        - filesystem paths
+#   _GS_C_BRANCH yellow      - branch refs
+#   _GS_C_OK     green       - success / active state
+#   _GS_C_WARN   yellow      - warnings, dirty state, skipped work
+#   _GS_C_ERR    red         - failures
+#   _GS_C_DIM    dim         - secondary info (idle slots, ages, footnotes)
+#   _GS_C_BOLD   bold        - emphasis (table headers, current-slot marker)
+#   _GS_C_RST    reset       - end of any color span
+_git-sh-init-colors () {
+    typeset -g _GS_C_RST="" _GS_C_BOLD="" _GS_C_DIM=""
+    typeset -g _GS_C_TAG="" _GS_C_PATH="" _GS_C_BRANCH=""
+    typeset -g _GS_C_OK="" _GS_C_WARN="" _GS_C_ERR=""
+
+    _git-sh-color-on "${1:-1}" || return 0
+
+    _GS_C_RST=$'\e[0m'
+    _GS_C_BOLD=$'\e[1m'
+    _GS_C_DIM=$'\e[2m'
+    _GS_C_TAG=$'\e[1;36m'
+    _GS_C_PATH=$'\e[34m'
+    _GS_C_BRANCH=$'\e[33m'
+    _GS_C_OK=$'\e[32m'
+    _GS_C_WARN=$'\e[33m'
+    _GS_C_ERR=$'\e[31m'
+}
+
+# Map a slot state ("idle"/"active"/"dirty"/"current") to its color escape.
+# Returns the configured _GS_C_* for that state, or _GS_C_DIM as a safe default.
+# Callers must have already run _git-sh-init-colors for the target fd.
+_git-sh-state-color () {
+    case "$1" in
+        active)  print -nr -- "$_GS_C_OK" ;;
+        dirty)   print -nr -- "$_GS_C_WARN$_GS_C_BOLD" ;;
+        current) print -nr -- "$_GS_C_TAG" ;;
+        idle)    print -nr -- "$_GS_C_DIM" ;;
+        *)       print -nr -- "$_GS_C_DIM" ;;
+    esac
+}
+
 # Git shorthand aliases
 alias ga="git add"
 alias gaa="git add --all"
@@ -152,17 +222,19 @@ _git-wt-seed-node-modules () {
     local source_root="$1"
     local target_root="$2"
 
+    _git-sh-init-colors 2
+
     if [[ ! -d "$source_root/node_modules" ]]; then
-        print -r -- "gwtpool: no node_modules found at $source_root; skipping cache seed" >&2
+        print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} no node_modules found at ${_GS_C_PATH}$source_root${_GS_C_RST}; skipping cache seed" >&2
         return 0
     fi
 
     if [[ -e "$target_root/node_modules" ]]; then
-        print -r -- "gwtpool: node_modules already exists in target; skipping cache seed" >&2
+        print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} node_modules already exists in target; skipping cache seed" >&2
         return 0
     fi
 
-    print -r -- "gwtpool: copying node_modules from $source_root" >&2
+    print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} copying node_modules from ${_GS_C_PATH}$source_root${_GS_C_RST}" >&2
     mkdir -p "$target_root/node_modules"
     rsync -a "$source_root/node_modules/" "$target_root/node_modules/"
 }
@@ -207,31 +279,33 @@ _git-wt-detect-lockfile () {
 _git-wt-install-deps () {
     local target_root="$1"
 
+    _git-sh-init-colors 1
+
     if [[ -f "$target_root/pnpm-lock.yaml" ]]; then
-        print -r -- "gwtpool: running pnpm install --prefer-offline"
+        print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} running ${_GS_C_BOLD}pnpm install --prefer-offline${_GS_C_RST}"
         (cd "$target_root" && _git-wt-run-with-optional-mise pnpm install --prefer-offline)
         return
     fi
 
     if [[ -f "$target_root/yarn.lock" ]]; then
-        print -r -- "gwtpool: running yarn install"
+        print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} running ${_GS_C_BOLD}yarn install${_GS_C_RST}"
         (cd "$target_root" && _git-wt-run-with-optional-mise yarn install)
         return
     fi
 
     if [[ -f "$target_root/package-lock.json" ]]; then
-        print -r -- "gwtpool: running npm ci --prefer-offline"
+        print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} running ${_GS_C_BOLD}npm ci --prefer-offline${_GS_C_RST}"
         (cd "$target_root" && _git-wt-run-with-optional-mise npm ci --prefer-offline)
         return
     fi
 
     if [[ -f "$target_root/package.json" ]]; then
-        print -r -- "gwtpool: running npm install --prefer-offline"
+        print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} running ${_GS_C_BOLD}npm install --prefer-offline${_GS_C_RST}"
         (cd "$target_root" && _git-wt-run-with-optional-mise npm install --prefer-offline)
         return
     fi
 
-    print -r -- "gwtpool: no package manifest found; skipping install"
+    print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} no package manifest found; skipping install"
 }
 
 # Helper: returns 0 when the slot's lockfile matches between old_head and current HEAD;
@@ -262,7 +336,8 @@ _git-wt-run-post-checkout () {
     hook="$wt_base/post-checkout"
     [[ -x "$hook" ]] || return 0
 
-    print -r -- "gwtpool: running post-checkout" >&2
+    _git-sh-init-colors 2
+    print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} running post-checkout" >&2
     (
         cd "$slot" || exit 1
         export GWT_SLOT="$slot"
@@ -443,7 +518,8 @@ _git-wt-grow-pool () {
     local next_n=$(( max_n + 1 ))
     local new_slot="$wt_base/tree-$next_n"
 
-    print -r -- "gwtpool: creating $new_slot" >&2
+    _git-sh-init-colors 2
+    print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} creating ${_GS_C_PATH}$new_slot${_GS_C_RST}" >&2
     git worktree add --detach "$new_slot" HEAD >&2 || return 1
 
     local main_wt
@@ -476,28 +552,37 @@ _git-wt-prompt-full-pool () {
         return 1
     fi
 
-    print -r -- "gwtpool: pool is full (${#active_slots} active slot(s)):" >&2
+    _git-sh-init-colors 2
 
-    local i name marker
+    print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} pool is full (${_GS_C_BOLD}${#active_slots}${_GS_C_RST} active slot(s)):" >&2
+
+    local i name marker marker_color state_color
     for (( i=1; i<=${#active_slots}; i++ )); do
         slot="${active_slots[$i]}"
         branch="${active_branches[$i]}"
         state="${active_states[$i]}"
         name="${slot:t}"
         marker=""
-        [[ "$state" == "dirty" ]] && marker=" (dirty)"
-        [[ "$state" == "current" ]] && marker=" (current)"
-        print -r -- "  $i. $name [${branch:-<detached>}]${marker}" >&2
+        marker_color=""
+        if [[ "$state" == "dirty" ]]; then
+            marker=" (dirty)"
+            marker_color="$_GS_C_WARN"
+        elif [[ "$state" == "current" ]]; then
+            marker=" (current)"
+            marker_color="$_GS_C_TAG"
+        fi
+        state_color=$(_git-sh-state-color "$state")
+        print -r -- "  ${_GS_C_BOLD}$i.${_GS_C_RST} ${state_color}$name${_GS_C_RST} [${_GS_C_BRANCH}${branch:-<detached>}${_GS_C_RST}]${marker_color}${marker}${_GS_C_RST}" >&2
     done
-    print -r -- "  g. grow pool (create a new slot)" >&2
-    print -r -- "  q. cancel" >&2
+    print -r -- "  ${_GS_C_BOLD}g.${_GS_C_RST} ${_GS_C_OK}grow pool${_GS_C_RST} (create a new slot)" >&2
+    print -r -- "  ${_GS_C_BOLD}q.${_GS_C_RST} ${_GS_C_ERR}cancel${_GS_C_RST}" >&2
 
-    print -n -- "Choice: " >&2
+    print -n -- "${_GS_C_BOLD}Choice:${_GS_C_RST} " >&2
     local choice
     if ! read -r choice; then
         if ! [[ -t 0 ]]; then
-            print -r -- "gwtpool: stdin is not a tty and input ended; cannot prompt for a slot to recycle" >&2
-            print -r -- "gwtpool: release a slot with gwtd, run gwtprune/gbprune, or run from an interactive shell" >&2
+            print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} stdin is not a tty and input ended; cannot prompt for a slot to recycle" >&2
+            print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} release a slot with ${_GS_C_BOLD}gwtd${_GS_C_RST}, run ${_GS_C_BOLD}gwtprune${_GS_C_RST}/${_GS_C_BOLD}gbprune${_GS_C_RST}, or run from an interactive shell" >&2
             return 1
         fi
         choice=""
@@ -529,6 +614,8 @@ _git-wt-release-slot () {
     local slot=""
     local delete_branch=0 force=0
 
+    _git-sh-init-colors 1
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --delete-branch)
@@ -541,7 +628,7 @@ _git-wt-release-slot () {
                 ;;
             *)
                 [[ -z "$slot" ]] || {
-                    print -r -- "gwtpool: extra argument: $1" >&2
+                    print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} ${_GS_C_ERR}extra argument:${_GS_C_RST} $1" >&2
                     return 1
                 }
                 slot="$1"
@@ -551,7 +638,7 @@ _git-wt-release-slot () {
     done
 
     [[ -n "$slot" && -d "$slot" ]] || {
-        print -r -- "gwtpool: invalid slot: $slot" >&2
+        print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} ${_GS_C_ERR}invalid slot:${_GS_C_RST} $slot" >&2
         return 1
     }
 
@@ -559,12 +646,12 @@ _git-wt-release-slot () {
     state=$(_git-wt-slot-state "$slot") || return 1
 
     if [[ "$state" == "current" ]]; then
-        print -r -- "gwtpool: refusing to release current slot ($slot); cd elsewhere first" >&2
+        print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} ${_GS_C_ERR}refusing to release current slot${_GS_C_RST} (${_GS_C_PATH}$slot${_GS_C_RST}); cd elsewhere first" >&2
         return 1
     fi
 
     if [[ "$state" == "dirty" && $force -eq 0 ]]; then
-        print -r -- "gwtpool: $slot has uncommitted changes; commit/stash first, or use --force" >&2
+        print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} ${_GS_C_PATH}$slot${_GS_C_RST} has ${_GS_C_WARN}uncommitted changes${_GS_C_RST}; commit/stash first, or use ${_GS_C_BOLD}--force${_GS_C_RST}" >&2
         return 1
     fi
 
@@ -572,12 +659,12 @@ _git-wt-release-slot () {
     branch=$(_git-wt-slot-branch "$slot")
 
     if [[ -n "$branch" ]]; then
-        print -r -- "gwtpool: detaching HEAD in $slot (was $branch)"
+        print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} detaching HEAD in ${_GS_C_PATH}$slot${_GS_C_RST} (was ${_GS_C_BRANCH}$branch${_GS_C_RST})"
         git -C "$slot" checkout --detach HEAD || return 1
     fi
 
     if (( delete_branch )) && [[ -n "$branch" ]]; then
-        print -r -- "gwtpool: deleting branch $branch"
+        print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} deleting branch ${_GS_C_BRANCH}$branch${_GS_C_RST}"
         git branch -D "$branch" || return 1
     fi
 }
@@ -615,7 +702,8 @@ _git-wt-allocate-slot () {
             _git-wt-grow-pool || return 1
             ;;
         cancel|"")
-            print -r -- "gwtpool: cancelled" >&2
+            _git-sh-init-colors 2
+            print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} ${_GS_C_DIM}cancelled${_GS_C_RST}" >&2
             return 1
             ;;
         *)
@@ -643,7 +731,8 @@ _git-wt-activate-slot () {
         local main_lockfile_unchanged=0
         if _git-wt-lockfile-unchanged "$slot" "$old_head"; then
             main_lockfile_unchanged=1
-            print -r -- "gwtpool: lockfile unchanged, skipping install"
+            _git-sh-init-colors 1
+            print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} ${_GS_C_DIM}lockfile unchanged, skipping install${_GS_C_RST}"
         else
             _git-wt-install-deps "$slot" || return 1
         fi
@@ -656,11 +745,13 @@ gwta () {
     local base_ref="" branch=""
     local run_install=1
 
+    _git-sh-init-colors 1
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --base)
                 [[ $# -ge 2 ]] || {
-                    print -r -- "gwta: --base requires a ref" >&2
+                    print -r -- "${_GS_C_TAG}gwta:${_GS_C_RST} ${_GS_C_ERR}--base requires a ref${_GS_C_RST}" >&2
                     return 1
                 }
                 base_ref="$2"
@@ -675,12 +766,12 @@ gwta () {
                 return 0
                 ;;
             -*)
-                print -r -- "gwta: unknown option: $1" >&2
+                print -r -- "${_GS_C_TAG}gwta:${_GS_C_RST} ${_GS_C_ERR}unknown option:${_GS_C_RST} $1" >&2
                 return 1
                 ;;
             *)
                 [[ -z "$branch" ]] || {
-                    print -r -- "gwta: expected one branch, got extra argument: $1" >&2
+                    print -r -- "${_GS_C_TAG}gwta:${_GS_C_RST} expected one branch, got extra argument: $1" >&2
                     return 1
                 }
                 branch="$1"
@@ -698,18 +789,18 @@ gwta () {
 
     local slot
     if slot=$(_git-wt-find-slot-by-branch "$branch"); then
-        print -r -- "gwta: branch $branch already in $slot"
+        print -r -- "${_GS_C_TAG}gwta:${_GS_C_RST} branch ${_GS_C_BRANCH}$branch${_GS_C_RST} already in ${_GS_C_PATH}$slot${_GS_C_RST}"
         cd "$slot" || return 1
         return 0
     fi
 
     slot=$(_git-wt-allocate-slot) || return 1
 
-    print -r -- "gwta: activating $slot with new branch $branch from $base_ref"
+    print -r -- "${_GS_C_TAG}gwta:${_GS_C_RST} activating ${_GS_C_PATH}$slot${_GS_C_RST} with new branch ${_GS_C_BRANCH}$branch${_GS_C_RST} from ${_GS_C_BRANCH}$base_ref${_GS_C_RST}"
     _git-wt-activate-slot "$slot" "$run_install" checkout -b "$branch" "$base_ref" || return 1
 
     cd "$slot" || return 1
-    print -r -- "gwta: ready: $slot"
+    print -r -- "${_GS_C_TAG}gwta:${_GS_C_RST} ${_GS_C_OK}ready:${_GS_C_RST} ${_GS_C_PATH}$slot${_GS_C_RST}"
 }
 
 # Fetch main, then gwta. Flags forward straight through.
@@ -723,6 +814,8 @@ gwtco () {
     local branch=""
     local run_install=1
 
+    _git-sh-init-colors 1
+
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --no-install)
@@ -734,12 +827,12 @@ gwtco () {
                 return 0
                 ;;
             -*)
-                print -r -- "gwtco: unknown option: $1" >&2
+                print -r -- "${_GS_C_TAG}gwtco:${_GS_C_RST} ${_GS_C_ERR}unknown option:${_GS_C_RST} $1" >&2
                 return 1
                 ;;
             *)
                 [[ -z "$branch" ]] || {
-                    print -r -- "gwtco: expected one branch, got extra argument: $1" >&2
+                    print -r -- "${_GS_C_TAG}gwtco:${_GS_C_RST} expected one branch, got extra argument: $1" >&2
                     return 1
                 }
                 branch="$1"
@@ -755,7 +848,7 @@ gwtco () {
 
     local slot
     if slot=$(_git-wt-find-slot-by-branch "$branch"); then
-        print -r -- "gwtco: branch $branch already in $slot"
+        print -r -- "${_GS_C_TAG}gwtco:${_GS_C_RST} branch ${_GS_C_BRANCH}$branch${_GS_C_RST} already in ${_GS_C_PATH}$slot${_GS_C_RST}"
         cd "$slot" || return 1
         return 0
     fi
@@ -763,18 +856,18 @@ gwtco () {
     slot=$(_git-wt-allocate-slot) || return 1
 
     if git show-ref --verify --quiet "refs/heads/$branch"; then
-        print -r -- "gwtco: activating $slot with local branch $branch"
+        print -r -- "${_GS_C_TAG}gwtco:${_GS_C_RST} activating ${_GS_C_PATH}$slot${_GS_C_RST} with local branch ${_GS_C_BRANCH}$branch${_GS_C_RST}"
         _git-wt-activate-slot "$slot" "$run_install" checkout "$branch" || return 1
     elif git show-ref --verify --quiet "refs/remotes/origin/$branch"; then
-        print -r -- "gwtco: activating $slot with origin/$branch as local branch $branch"
+        print -r -- "${_GS_C_TAG}gwtco:${_GS_C_RST} activating ${_GS_C_PATH}$slot${_GS_C_RST} with ${_GS_C_BRANCH}origin/$branch${_GS_C_RST} as local branch ${_GS_C_BRANCH}$branch${_GS_C_RST}"
         _git-wt-activate-slot "$slot" "$run_install" checkout --track -b "$branch" "origin/$branch" || return 1
     else
-        print -r -- "gwtco: no local or origin/$branch ref found" >&2
+        print -r -- "${_GS_C_TAG}gwtco:${_GS_C_RST} ${_GS_C_ERR}no local or origin/$branch ref found${_GS_C_RST}" >&2
         return 1
     fi
 
     cd "$slot" || return 1
-    print -r -- "gwtco: ready: $slot"
+    print -r -- "${_GS_C_TAG}gwtco:${_GS_C_RST} ${_GS_C_OK}ready:${_GS_C_RST} ${_GS_C_PATH}$slot${_GS_C_RST}"
 }
 
 # cd into a slot by fuzzy substring match against slot directory names AND branch
@@ -784,6 +877,9 @@ gwtco () {
 # what's available and fails.
 gwtcd () {
     local query="$1"
+
+    _git-sh-init-colors 2
+
     [[ -n "$query" ]] || {
         print -r -- "usage: gwtcd <fuzzy>" >&2
         return 2
@@ -819,43 +915,56 @@ gwtcd () {
     done
 
     if (( ${#slot_paths} == 0 )); then
-        print -r -- "gwtcd: no slots exist; create one with gwta/gwtco" >&2
+        print -r -- "${_GS_C_TAG}gwtcd:${_GS_C_RST} ${_GS_C_DIM}no slots exist; create one with${_GS_C_RST} ${_GS_C_BOLD}gwta${_GS_C_RST}/${_GS_C_BOLD}gwtco${_GS_C_RST}" >&2
         return 1
     fi
 
-    local -a match_paths match_descs
+    # Parallel arrays for matched slots; carrying name + branch separately
+    # keeps the ambiguity reporter from having to parse "name (branch)" back
+    # apart for colorization, which is brittle under extended_glob.
+    local -a match_paths match_names match_branches
     local -A seen
-    local i name branch display
+    local i name branch
     for (( i=1; i<=${#slot_paths}; i++ )); do
         slot="${slot_paths[$i]}"
         name="${slot_names[$i]}"
         branch="${slot_branches[$i]}"
-        display="$name${branch:+ ($branch)}"
 
         if [[ "$name" == *"$query"* ]] || [[ -n "$branch" && "$branch" == *"$query"* ]]; then
             if (( ! ${+seen[$slot]} )); then
                 seen[$slot]=1
                 match_paths+=("$slot")
-                match_descs+=("$display")
+                match_names+=("$name")
+                match_branches+=("$branch")
             fi
         fi
     done
 
     if (( ${#match_paths} == 0 )); then
-        print -r -- "gwtcd: no slot matching '$query'" >&2
-        print -r -- "available:" >&2
+        print -r -- "${_GS_C_TAG}gwtcd:${_GS_C_RST} ${_GS_C_ERR}no slot matching '$query'${_GS_C_RST}" >&2
+        print -r -- "${_GS_C_BOLD}available:${_GS_C_RST}" >&2
         for (( i=1; i<=${#slot_paths}; i++ )); do
             name="${slot_names[$i]}"
             branch="${slot_branches[$i]}"
-            print -r -- "  $name${branch:+ ($branch)}" >&2
+            if [[ -n "$branch" ]]; then
+                print -r -- "  $name (${_GS_C_BRANCH}$branch${_GS_C_RST})" >&2
+            else
+                print -r -- "  $name" >&2
+            fi
         done
         return 1
     fi
 
     if (( ${#match_paths} > 1 )); then
-        print -r -- "gwtcd: ambiguous match for '$query':" >&2
-        for display in "${match_descs[@]}"; do
-            print -r -- "  $display" >&2
+        print -r -- "${_GS_C_TAG}gwtcd:${_GS_C_RST} ${_GS_C_WARN}ambiguous match for '$query':${_GS_C_RST}" >&2
+        for (( i=1; i<=${#match_paths}; i++ )); do
+            name="${match_names[$i]}"
+            branch="${match_branches[$i]}"
+            if [[ -n "$branch" ]]; then
+                print -r -- "  $name (${_GS_C_BRANCH}$branch${_GS_C_RST})" >&2
+            else
+                print -r -- "  $name" >&2
+            fi
         done
         return 1
     fi
@@ -871,6 +980,8 @@ gwtl () {
     # interactive shell with MONITOR on that prints `[N] PID` / `[N] done`
     # noise per slot. `local_options` reverts both flags on function exit.
     setopt local_options no_monitor no_notify
+
+    _git-sh-init-colors 1
 
     # Default to fast mode: skip the per-slot dirty check, which on a
     # multi-gigabyte monorepo dominates wall time even when parallelized
@@ -889,7 +1000,7 @@ gwtl () {
                 return 0
                 ;;
             *)
-                print -r -- "gwtl: unknown option: $1" >&2
+                print -r -- "${_GS_C_TAG}gwtl:${_GS_C_RST} ${_GS_C_ERR}unknown option:${_GS_C_RST} $1" >&2
                 return 1
                 ;;
         esac
@@ -977,15 +1088,27 @@ gwtl () {
         rows+=("$branch"$'\t'"$state"$'\t'"$age"$'\t'"$slot_path")
     done
 
-    # Format string is built from data-driven column widths, hence
-    # SC2059 (variable-as-format) is intentional here.
-    local fmt="%-${max_branch}s  %-${max_state}s  %-${max_age}s  %s\n"
-    # shellcheck disable=SC2059
-    printf "$fmt" "$hdr_branch" "$hdr_state" "$hdr_age" "PATH"
-    # shellcheck disable=SC2059
-    printf "$fmt" "$main_branch" "$main_repo_state" "" "$main_wt"
+    # Column widths drive printf padding. Padding must be computed on the
+    # plain text first (ANSI escapes are bytes that printf would otherwise
+    # mis-count), so each row is built by:
+    #   1. printf -v <var> "%-Ns" "$plain" — pad to N visible chars,
+    #   2. wrap the padded result in this column's color span,
+    #   3. concatenate columns separated by two spaces.
+    local pb ps pa
+    printf -v pb "%-${max_branch}s" "$hdr_branch"
+    printf -v ps "%-${max_state}s" "$hdr_state"
+    printf -v pa "%-${max_age}s" "$hdr_age"
+    print -r -- "${_GS_C_BOLD}${pb}${_GS_C_RST}  ${_GS_C_BOLD}${ps}${_GS_C_RST}  ${_GS_C_BOLD}${pa}${_GS_C_RST}  ${_GS_C_BOLD}PATH${_GS_C_RST}"
 
-    local row b s a p
+    printf -v pb "%-${max_branch}s" "$main_branch"
+    printf -v ps "%-${max_state}s" "$main_repo_state"
+    printf -v pa "%-${max_age}s" ""
+    # Main repo row gets the tag color on its branch so it visually anchors
+    # the table; the state slot reuses tag color to distinguish it from
+    # ordinary slot states (idle/active/dirty/current).
+    print -r -- "${_GS_C_TAG}${pb}${_GS_C_RST}  ${_GS_C_TAG}${ps}${_GS_C_RST}  ${_GS_C_DIM}${pa}${_GS_C_RST}  ${_GS_C_PATH}${main_wt}${_GS_C_RST}"
+
+    local row b s a p state_color
     for row in "${rows[@]}"; do
         b="${row%%$'\t'*}"
         rest="${row#*$'\t'}"
@@ -994,8 +1117,18 @@ gwtl () {
         a="${rest%%$'\t'*}"
         rest="${rest#*$'\t'}"
         p="$rest"
-        # shellcheck disable=SC2059
-        printf "$fmt" "$b" "$s" "$a" "$p"
+
+        printf -v pb "%-${max_branch}s" "$b"
+        printf -v ps "%-${max_state}s" "$s"
+        printf -v pa "%-${max_age}s" "$a"
+
+        state_color=$(_git-sh-state-color "$s")
+        # Detached slots get dim branch text to match their semantic weight
+        # (they're idle holdings, not active work).
+        local branch_color="$_GS_C_BRANCH"
+        [[ "$b" == "<detached>" ]] && branch_color="$_GS_C_DIM"
+
+        print -r -- "${branch_color}${pb}${_GS_C_RST}  ${state_color}${ps}${_GS_C_RST}  ${_GS_C_DIM}${pa}${_GS_C_RST}  ${_GS_C_PATH}${p}${_GS_C_RST}"
     done
 }
 
@@ -1003,6 +1136,8 @@ gwtl () {
 # delete the branch. Refuses current slot always; refuses dirty without --force.
 gwtd () {
     local delete_branch=0 force=0 branch=""
+
+    _git-sh-init-colors 2
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1019,12 +1154,12 @@ gwtd () {
                 return 0
                 ;;
             -*)
-                print -r -- "gwtd: unknown option: $1" >&2
+                print -r -- "${_GS_C_TAG}gwtd:${_GS_C_RST} ${_GS_C_ERR}unknown option:${_GS_C_RST} $1" >&2
                 return 1
                 ;;
             *)
                 [[ -z "$branch" ]] || {
-                    print -r -- "gwtd: extra argument: $1" >&2
+                    print -r -- "${_GS_C_TAG}gwtd:${_GS_C_RST} extra argument: $1" >&2
                     return 1
                 }
                 branch="$1"
@@ -1040,7 +1175,7 @@ gwtd () {
 
     local slot
     slot=$(_git-wt-find-slot-by-branch "$branch") || {
-        print -r -- "gwtd: no slot has branch $branch checked out" >&2
+        print -r -- "${_GS_C_TAG}gwtd:${_GS_C_RST} ${_GS_C_ERR}no slot has branch ${_GS_C_BRANCH}$branch${_GS_C_ERR} checked out${_GS_C_RST}" >&2
         return 1
     }
 
@@ -1106,8 +1241,10 @@ _git-github-merged-local-branches () {
 
     (( ${#local_oid_by_branch} > 0 )) || return 0
 
+    _git-sh-init-colors 2
+
     local total=${#local_oid_by_branch}
-    print -r -- "  querying GitHub for $total candidate branch(es) (parallel)..." >&2
+    print -r -- "  ${_GS_C_DIM}querying GitHub for $total candidate branch(es) (parallel)...${_GS_C_RST}" >&2
 
     local tmpfile
     tmpfile=$(mktemp "${TMPDIR:-/tmp}/git-shorthand-gh.XXXXXX" 2>/dev/null) || return 0
@@ -1219,7 +1356,8 @@ _git-stale-local-branches () {
         done
 
         if (( ${#patch_id_candidates} > 0 )); then
-            print -r -- "  comparing patch-ids for ${#patch_id_candidates} branch(es) (no gh available)..." >&2
+            _git-sh-init-colors 2
+            print -r -- "  ${_GS_C_DIM}comparing patch-ids for ${#patch_id_candidates} branch(es) (no gh available)...${_GS_C_RST}" >&2
 
             local -A main_patch_ids_by_base
             local patch_info merge_base branch_patch main_patch_ids
@@ -1287,17 +1425,19 @@ _git-fetch-prune-best-effort () {
     local label="${1:-gbprune}"
     local attempts=3 attempt
 
+    _git-sh-init-colors 2
+
     for (( attempt = 1; attempt <= attempts; attempt++ )); do
         if git fetch --prune; then
             return 0
         fi
         if (( attempt < attempts )); then
-            print -r -- "$label: fetch attempt $attempt/$attempts failed (likely transient ref-lock race); retrying in ${attempt}s..." >&2
+            print -r -- "${_GS_C_TAG}${label}:${_GS_C_RST} ${_GS_C_WARN}fetch attempt $attempt/$attempts failed${_GS_C_RST} (likely transient ref-lock race); retrying in ${attempt}s..." >&2
             sleep "$attempt"
         fi
     done
 
-    print -r -- "$label: fetch failed after $attempts attempts; continuing with local state — recent merges may not be detected this run" >&2
+    print -r -- "${_GS_C_TAG}${label}:${_GS_C_RST} ${_GS_C_WARN}fetch failed after $attempts attempts${_GS_C_RST}; continuing with local state — recent merges may not be detected this run" >&2
     return 0
 }
 
@@ -1312,7 +1452,9 @@ _git-fetch-prune-best-effort () {
 # for reuse. Dirty (or `current`) holders are refused by the helper with
 # a clear message, so uncommitted work is never silently destroyed.
 gbprune () {
-    print -r -- "gbprune: fetching remotes with prune..."
+    _git-sh-init-colors 1
+
+    print -r -- "${_GS_C_TAG}gbprune:${_GS_C_RST} fetching remotes with prune..."
     _git-fetch-prune-best-effort gbprune
 
     local current branch
@@ -1341,7 +1483,7 @@ gbprune () {
         worktree_by_branch[$wt_branch]="$wt_path"
     fi
 
-    print -r -- "gbprune: checking local branches..."
+    print -r -- "${_GS_C_TAG}gbprune:${_GS_C_RST} checking local branches..."
     local deleted_branches=0 failed_branches=0 released_worktrees=0
     for branch in "${(@f)$(_git-stale-local-branches "$current")}"; do
         [[ -z "$branch" ]] && continue
@@ -1354,18 +1496,18 @@ gbprune () {
             # "gwtpool: deleting branch <branch>", and refuses dirty/current
             # slots without touching them. On success the branch is already
             # gone, so skip the trailing `git branch -D` below.
-            print -r -- "gbprune: releasing slot $holder for stale branch $branch"
+            print -r -- "${_GS_C_TAG}gbprune:${_GS_C_RST} releasing slot ${_GS_C_PATH}$holder${_GS_C_RST} for stale branch ${_GS_C_BRANCH}$branch${_GS_C_RST}"
             if _git-wt-release-slot --delete-branch "$holder"; then
                 (( deleted_branches += 1 ))
                 (( released_worktrees += 1 ))
             else
-                print -r -- "gbprune: skipping $branch — slot $holder could not be released (see message above)"
+                print -r -- "${_GS_C_TAG}gbprune:${_GS_C_RST} ${_GS_C_WARN}skipping ${_GS_C_BRANCH}$branch${_GS_C_RST} — slot ${_GS_C_PATH}$holder${_GS_C_RST} could not be released (see message above)"
                 (( failed_branches += 1 ))
             fi
             continue
         fi
 
-        print -r -- "gbprune: deleting branch $branch"
+        print -r -- "${_GS_C_TAG}gbprune:${_GS_C_RST} deleting branch ${_GS_C_BRANCH}$branch${_GS_C_RST}"
         if git branch -D "$branch"; then
             (( deleted_branches += 1 ))
         else
@@ -1373,8 +1515,13 @@ gbprune () {
         fi
     done
 
-    local summary="gbprune: deleted $deleted_branches branch(es), failed $failed_branches"
-    (( released_worktrees > 0 )) && summary+=" (released $released_worktrees slot(s))"
+    # Build a colored summary line. The body remains "gbprune: deleted N
+    # branch(es), failed M [(released K slot(s))]" so existing test matchers
+    # ('deleted X branch(es), failed Y') keep working.
+    local fail_color="$_GS_C_OK"
+    (( failed_branches > 0 )) && fail_color="$_GS_C_ERR"
+    local summary="${_GS_C_TAG}gbprune:${_GS_C_RST} deleted ${_GS_C_OK}$deleted_branches${_GS_C_RST} branch(es), failed ${fail_color}$failed_branches${_GS_C_RST}"
+    (( released_worktrees > 0 )) && summary+=" (released ${_GS_C_OK}$released_worktrees${_GS_C_RST} slot(s))"
     print -r -- "$summary"
     (( failed_branches == 0 ))
 }
@@ -1390,11 +1537,13 @@ gpbprune () {
 # manually with `gwtd --force` and/or `gwtd --delete-branch`). Always finishes
 # with `git worktree prune -v` to clean up administrative cruft.
 gwtprune () {
-    print -r -- "gwtprune: fetching remotes with prune..."
+    _git-sh-init-colors 1
+
+    print -r -- "${_GS_C_TAG}gwtprune:${_GS_C_RST} fetching remotes with prune..."
     _git-fetch-prune-best-effort gwtprune
 
     local -a slot_paths slot_branches
-    local slot branch state
+    local slot branch state state_color
     for slot in "${(@f)$(_git-wt-pool-slots)}"; do
         [[ -z "$slot" ]] && continue
         branch=$(_git-wt-slot-branch "$slot")
@@ -1402,7 +1551,8 @@ gwtprune () {
 
         state=$(_git-wt-slot-state "$slot")
         if [[ "$state" == "dirty" || "$state" == "current" ]]; then
-            print -r -- "gwtprune: skipping $slot ($branch, $state)" >&2
+            state_color=$(_git-sh-state-color "$state")
+            print -r -- "${_GS_C_TAG}gwtprune:${_GS_C_RST} ${_GS_C_DIM}skipping${_GS_C_RST} ${_GS_C_PATH}$slot${_GS_C_RST} (${_GS_C_BRANCH}$branch${_GS_C_RST}, ${state_color}$state${_GS_C_RST})" >&2
             continue
         fi
 
@@ -1418,7 +1568,7 @@ gwtprune () {
         done
     fi
 
-    print -r -- "gwtprune: scanning slots (${#slot_branches} branch candidate(s), ${#stale_map} stale)..."
+    print -r -- "${_GS_C_TAG}gwtprune:${_GS_C_RST} scanning slots (${_GS_C_BOLD}${#slot_branches}${_GS_C_RST} branch candidate(s), ${_GS_C_BOLD}${#stale_map}${_GS_C_RST} stale)..."
 
     local released=0 failed=0 i
     for (( i = 1; i <= ${#slot_paths}; i++ )); do
@@ -1427,7 +1577,7 @@ gwtprune () {
 
         [[ -n "${stale_map[$branch]-}" ]] || continue
 
-        print -r -- "gwtprune: releasing $slot ($branch)"
+        print -r -- "${_GS_C_TAG}gwtprune:${_GS_C_RST} releasing ${_GS_C_PATH}$slot${_GS_C_RST} (${_GS_C_BRANCH}$branch${_GS_C_RST})"
         if _git-wt-release-slot --delete-branch "$slot"; then
             (( released += 1 ))
         else
@@ -1437,7 +1587,9 @@ gwtprune () {
 
     local prune_status=0
     git worktree prune -v || prune_status=$?
-    print -r -- "gwtprune: released $released slot(s), failed $failed"
+    local fail_color="$_GS_C_OK"
+    (( failed > 0 )) && fail_color="$_GS_C_ERR"
+    print -r -- "${_GS_C_TAG}gwtprune:${_GS_C_RST} released ${_GS_C_OK}$released${_GS_C_RST} slot(s), failed ${fail_color}$failed${_GS_C_RST}"
     (( prune_status == 0 && failed == 0 ))
 }
 
