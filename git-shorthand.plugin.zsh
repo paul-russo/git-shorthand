@@ -110,6 +110,7 @@ gco () {
     if wt_path=$(_git-co-parse-worktree-in-use "$output"); then
         print -r -- "$output" >&2
         _git-co-offer-gwtcd "$wt_path" && return 0
+        return 1
     fi
 
     print -r -- "$output" >&2
@@ -209,37 +210,72 @@ typeset -g _GIT_WT_POOL_SOFT_CAP=6
 _git-co-parse-worktree-in-use () {
     local msg="$1"
 
-    if [[ "$msg" =~ ' is already used by worktree at '\''([^'\'']+)'\''' ]]; then
-        print -r -- "${match[1]}"
+    if [[ "$msg" =~ ' (is already used by worktree|is already checked out) at '\''([^'\'']+)'\''' ]]; then
+        print -r -- "${match[2]}"
         return 0
     fi
 
     return 1
 }
 
-# Helper: whether gco may prompt on stdin (true in an interactive terminal).
+# Helper: whether gco may prompt (stdin, stderr, or /dev/tty is an interactive terminal).
 _git-co-can-prompt () {
-    [[ -t 0 ]]
+    [[ -t 0 || -t 2 || -r /dev/tty ]]
+}
+
+# Helper: read one line for gco prompts from stdin or /dev/tty when stdin is redirected.
+_git-co-read-line () {
+    if [[ -t 0 ]]; then
+        read -r "$@" && return 0
+        return 1
+    fi
+
+    # Piped stdin (tests, yes | gco): consume the pipe before opening /dev/tty.
+    if read -r "$@"; then
+        return 0
+    fi
+
+    if [[ -r /dev/tty ]]; then
+        read -r "$@" < /dev/tty && return 0
+    fi
+
+    return 1
+}
+
+# Helper: gwtcd query for a worktree path (root for the primary checkout, else slot basename).
+_git-co-gwtcd-target-for-path () {
+    local wt_path="$1"
+    local main_wt
+
+    main_wt=$(_git-main-worktree 2>/dev/null)
+    if [[ -n "$main_wt" && "$wt_path" == "$main_wt" ]]; then
+        print -r -- "root"
+        return 0
+    fi
+
+    print -r -- "${wt_path:t}"
 }
 
 # Helper: offer to cd into the worktree that holds the branch in interactive shells.
 _git-co-offer-gwtcd () {
     local wt_path="$1"
-    local slot_name="${wt_path:t}"
+    local gwtcd_target
 
     _git-co-can-prompt || return 1
 
+    gwtcd_target=$(_git-co-gwtcd-target-for-path "$wt_path")
+
     _git-sh-init-colors 2
 
-    print -n -- "${_GS_C_TAG}gco:${_GS_C_RST} ${_GS_C_BRANCH}$slot_name${_GS_C_RST} holds this branch at ${_GS_C_PATH}$wt_path${_GS_C_RST}. ${_GS_C_BOLD}Go there now? [y/N]:${_GS_C_RST} " >&2
+    print -n -- "${_GS_C_TAG}gco:${_GS_C_RST} ${_GS_C_BRANCH}$gwtcd_target${_GS_C_RST} holds this branch at ${_GS_C_PATH}$wt_path${_GS_C_RST}. ${_GS_C_BOLD}Go there now? [y/N]:${_GS_C_RST} " >&2
     local reply
-    if ! read -r reply; then
+    if ! _git-co-read-line reply; then
         return 1
     fi
 
     case "$reply" in
         y|Y|yes|YES)
-            if gwtcd "$slot_name" 2>/dev/null; then
+            if gwtcd "$gwtcd_target" 2>/dev/null; then
                 return 0
             fi
             cd "$wt_path" || return 1

@@ -62,7 +62,7 @@ Branch/worktree name completion uses the same slash-aware matching as zsh’s st
 ## Main Branch Operations
 These commands work with either `master` or `main` branches automatically:
 - `gfm` - Fetch main branch without checking it out
-- `gco` - Checkout a branch or ref. If the branch is already checked out in another worktree, an interactive shell offers to `cd` there via `gwtcd` instead; non-interactive shells fail with git's usual error.
+- `gco` - Checkout a branch or ref. If the branch is already checked out in another worktree, an interactive terminal offers to `cd` there via `gwtcd` (including when stdin is redirected but `/dev/tty` is available); non-interactive environments fail with git's usual error.
 - `gcom` - Checkout main branch via `gco` (same worktree-in-use behavior)
 - `gnb <branch>` - Create new branch from main
 - `gnbpp <branch>` - Create new branch from main and push
