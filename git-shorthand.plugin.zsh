@@ -870,6 +870,53 @@ gwtco () {
     print -r -- "${_GS_C_TAG}gwtco:${_GS_C_RST} ${_GS_C_OK}ready:${_GS_C_RST} ${_GS_C_PATH}$slot${_GS_C_RST}"
 }
 
+# Helper: drop -, _, and / for separator-insensitive slot-name matching.
+_git-wt-strip-name-separators () {
+    print -r -- "${1//[\-_\/]/}"
+}
+
+# Helper: lower score is a better slot-directory match for gwtcd.
+# Emits the score on stdout; returns 1 when the name does not match.
+_git-wt-gwtcd-name-score () {
+    local name="$1" query="$2"
+    local q_norm n_norm
+
+    if [[ "$name" == "$query" ]]; then
+        print -r -- 0
+        return 0
+    fi
+
+    if [[ "$name" == *"$query"* ]]; then
+        print -r -- $(( 1000 + ${#name} - ${#query} ))
+        return 0
+    fi
+
+    q_norm="$(_git-wt-strip-name-separators "$query")"
+    [[ -n "$q_norm" ]] || return 1
+
+    n_norm="$(_git-wt-strip-name-separators "$name")"
+
+    if [[ "$n_norm" == "$q_norm" ]]; then
+        print -r -- 2000
+        return 0
+    fi
+
+    if [[ "$n_norm" == *"$q_norm"* ]]; then
+        print -r -- $(( 3000 + ${#n_norm} - ${#q_norm} ))
+        return 0
+    fi
+
+    return 1
+}
+
+# Helper: tie-break equal name scores (lower is better).
+_git-wt-gwtcd-name-tiebreak () {
+    local name="$1" stripped
+
+    stripped="$(_git-wt-strip-name-separators "$name")"
+    print -r -- $(( (${#name} - ${#stripped}) * 1000 + ${#name} ))
+}
+
 # cd into a slot by fuzzy substring match against slot directory names AND branch
 # names. The primary checkout participates as the synthetic "root" slot, so the
 # literal "root" and the branch it currently holds (e.g. "main") both route to
@@ -922,22 +969,39 @@ gwtcd () {
     # Parallel arrays for matched slots; carrying name + branch separately
     # keeps the ambiguity reporter from having to parse "name (branch)" back
     # apart for colorization, which is brittle under extended_glob.
-    local -a match_paths match_names match_branches
+    local -a match_paths match_names match_branches match_scores match_tiebreaks
     local -A seen
-    local i name branch
+    local i name branch score name_score tiebreak best_score best_tiebreak
     for (( i=1; i<=${#slot_paths}; i++ )); do
         slot="${slot_paths[$i]}"
         name="${slot_names[$i]}"
         branch="${slot_branches[$i]}"
 
-        if [[ "$name" == *"$query"* ]] || [[ -n "$branch" && "$branch" == *"$query"* ]]; then
-            if (( ! ${+seen[$slot]} )); then
-                seen[$slot]=1
-                match_paths+=("$slot")
-                match_names+=("$name")
-                match_branches+=("$branch")
+        score=""
+        tiebreak=0
+
+        if name_score="$(_git-wt-gwtcd-name-score "$name" "$query" 2>/dev/null)"; then
+            score=$name_score
+            tiebreak="$(_git-wt-gwtcd-name-tiebreak "$name")"
+        fi
+
+        if [[ -n "$branch" && "$branch" == *"$query"* ]]; then
+            if [[ -z "$score" || score -gt 1500 ]]; then
+                score=1500
+                tiebreak=0
             fi
         fi
+
+        [[ -n "$score" ]] || continue
+        if (( ${+seen[$slot]} )); then
+            continue
+        fi
+        seen[$slot]=1
+        match_paths+=("$slot")
+        match_names+=("$name")
+        match_branches+=("$branch")
+        match_scores+=("$score")
+        match_tiebreaks+=("$tiebreak")
     done
 
     if (( ${#match_paths} == 0 )); then
@@ -955,11 +1019,31 @@ gwtcd () {
         return 1
     fi
 
-    if (( ${#match_paths} > 1 )); then
+    best_score=${match_scores[1]}
+    best_tiebreak=${match_tiebreaks[1]}
+    for (( i=2; i<=${#match_scores}; i++ )); do
+        if (( match_scores[i] < best_score )); then
+            best_score=${match_scores[i]}
+            best_tiebreak=${match_tiebreaks[i]}
+        elif (( match_scores[i] == best_score && match_tiebreaks[i] < best_tiebreak )); then
+            best_tiebreak=${match_tiebreaks[i]}
+        fi
+    done
+
+    local -a winner_paths winner_names winner_branches
+    for (( i=1; i<=${#match_paths}; i++ )); do
+        if (( match_scores[i] == best_score && match_tiebreaks[i] == best_tiebreak )); then
+            winner_paths+=("${match_paths[$i]}")
+            winner_names+=("${match_names[$i]}")
+            winner_branches+=("${match_branches[$i]}")
+        fi
+    done
+
+    if (( ${#winner_paths} > 1 )); then
         print -r -- "${_GS_C_TAG}gwtcd:${_GS_C_RST} ${_GS_C_WARN}ambiguous match for '$query':${_GS_C_RST}" >&2
-        for (( i=1; i<=${#match_paths}; i++ )); do
-            name="${match_names[$i]}"
-            branch="${match_branches[$i]}"
+        for (( i=1; i<=${#winner_paths}; i++ )); do
+            name="${winner_names[$i]}"
+            branch="${winner_branches[$i]}"
             if [[ -n "$branch" ]]; then
                 print -r -- "  $name (${_GS_C_BRANCH}$branch${_GS_C_RST})" >&2
             else
@@ -969,7 +1053,7 @@ gwtcd () {
         return 1
     fi
 
-    cd "${match_paths[1]}" || return 1
+    cd "${winner_paths[1]}" || return 1
 }
 
 # List the pool: main repo row, then slots sorted by mtime descending. Columns

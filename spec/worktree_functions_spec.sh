@@ -1003,6 +1003,48 @@ Describe 'gwtcd (cd by fuzzy match)'
     The variable GWTCD_CD_PATH should eq '/tmp/wt/tree-2'
   End
 
+  It 'cds into a slot when the query is a hyphen-free tree-N alias'
+    _git-main-worktree() { return 1; }
+    _git-wt-pool-slots() { printf '/tmp/wt/tree-1\n/tmp/wt/tree-2\n/tmp/wt/tree-3\n'; }
+    _git-wt-slot-branch() {
+      case "$1" in
+        */tree-1) print -r -- 'feature/foo' ;;
+        */tree-2) ;;
+        */tree-3) print -r -- 'feature/bar' ;;
+      esac
+    }
+
+    When call gwtcd tree2
+    The variable GWTCD_CD_PATH should eq '/tmp/wt/tree-2'
+  End
+
+  It 'cds into a slot when the query matches a name with separators ignored'
+    _git-main-worktree() { return 1; }
+    _git-wt-pool-slots() { printf '/tmp/wt/my-cool-branch\n'; }
+    _git-wt-slot-branch() { :; }
+
+    When call gwtcd coolbranch
+    The variable GWTCD_CD_PATH should eq '/tmp/wt/my-cool-branch'
+  End
+
+  It 'prefers an exact slot name over a separator-insensitive match'
+    _git-main-worktree() { return 1; }
+    _git-wt-pool-slots() { printf '/tmp/wt/coolbranch\n/tmp/wt/my-cool-branch\n'; }
+    _git-wt-slot-branch() { :; }
+
+    When call gwtcd coolbranch
+    The variable GWTCD_CD_PATH should eq '/tmp/wt/coolbranch'
+  End
+
+  It 'prefers a compact slot name over a punctuated separator-insensitive match'
+    _git-main-worktree() { return 1; }
+    _git-wt-pool-slots() { printf '/tmp/wt/mycoolbranch\n/tmp/wt/my-cool-branch\n'; }
+    _git-wt-slot-branch() { :; }
+
+    When call gwtcd coolbranch
+    The variable GWTCD_CD_PATH should eq '/tmp/wt/mycoolbranch'
+  End
+
   It 'cds into a slot when the query matches a branch substring'
     _git-main-worktree() { return 1; }
     _git-wt-pool-slots() { printf '/tmp/wt/tree-1\n/tmp/wt/tree-2\n'; }
