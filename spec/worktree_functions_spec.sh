@@ -1059,6 +1059,20 @@ Describe 'gwtcd (cd by fuzzy match)'
     The variable GWTCD_CD_PATH should eq '/tmp/wt/tree-2'
   End
 
+  It 'cds into a slot when the query matches a branch with separators ignored'
+    _git-main-worktree() { return 1; }
+    _git-wt-pool-slots() { printf '/tmp/wt/tree-1\n/tmp/wt/tree-8\n'; }
+    _git-wt-slot-branch() {
+      case "$1" in
+        */tree-1) print -r -- 'ppr_other-work' ;;
+        */tree-8) print -r -- 'ppr_fix-glass-terminal-init-race-f409' ;;
+      esac
+    }
+
+    When call gwtcd fixglass
+    The variable GWTCD_CD_PATH should eq '/tmp/wt/tree-8'
+  End
+
   It 'fails with a candidate list on ambiguous match'
     _git-main-worktree() { return 1; }
     _git-wt-pool-slots() { printf '/tmp/wt/tree-1\n/tmp/wt/tree-2\n'; }

@@ -971,7 +971,7 @@ gwtcd () {
     # apart for colorization, which is brittle under extended_glob.
     local -a match_paths match_names match_branches match_scores match_tiebreaks
     local -A seen
-    local i name branch score name_score tiebreak best_score best_tiebreak
+    local i name branch score name_score branch_score tiebreak best_score best_tiebreak
     for (( i=1; i<=${#slot_paths}; i++ )); do
         slot="${slot_paths[$i]}"
         name="${slot_names[$i]}"
@@ -985,10 +985,19 @@ gwtcd () {
             tiebreak="$(_git-wt-gwtcd-name-tiebreak "$name")"
         fi
 
-        if [[ -n "$branch" && "$branch" == *"$query"* ]]; then
-            if [[ -z "$score" || score -gt 1500 ]]; then
-                score=1500
-                tiebreak=0
+        if [[ -n "$branch" ]]; then
+            if [[ "$branch" == *"$query"* ]]; then
+                # Flat score keeps multiple literal branch hits ambiguous.
+                if [[ -z "$score" || score -gt 1500 ]]; then
+                    score=1500
+                    tiebreak=0
+                fi
+            elif branch_score="$(_git-wt-gwtcd-name-score "$branch" "$query" 2>/dev/null)"; then
+                branch_tiebreak="$(_git-wt-gwtcd-name-tiebreak "$branch")"
+                if [[ -z "$score" || branch_score -lt score ]]; then
+                    score=$branch_score
+                    tiebreak=$branch_tiebreak
+                fi
             fi
         fi
 
