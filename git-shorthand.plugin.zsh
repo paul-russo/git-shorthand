@@ -231,7 +231,7 @@ _git-co-offer-gwtcd () {
 
     _git-sh-init-colors 2
 
-    print -n -- "${_GS_C_TAG}gco:${_GS_C_RST} ${_GS_C_BRANCH}$slot_name${_GS_C_RST} holds this branch at ${_GS_C_PATH}$wt_path${_GS_C_RST}. ${_GS_C_BOLD}Cd there with gwtcd? [y/N]:${_GS_C_RST} " >&2
+    print -n -- "${_GS_C_TAG}gco:${_GS_C_RST} ${_GS_C_BRANCH}$slot_name${_GS_C_RST} holds this branch at ${_GS_C_PATH}$wt_path${_GS_C_RST}. ${_GS_C_BOLD}Go there now? [y/N]:${_GS_C_RST} " >&2
     local reply
     if ! read -r reply; then
         return 1

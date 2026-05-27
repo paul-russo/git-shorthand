@@ -35,7 +35,7 @@ Describe 'gco (checkout with worktree-in-use recovery)'
     The status should be failure
     The stderr should include 'reference is not a tree'
     The stderr should not include 'should not run'
-    The stderr should not include 'Cd there with gwtcd'
+    The stderr should not include 'Go there now'
   End
 
   It 'fails without prompting when stdin is not a tty'
@@ -44,7 +44,7 @@ Describe 'gco (checkout with worktree-in-use recovery)'
     When call gco main < /dev/null
     The status should be failure
     The stderr should include "already used by worktree at '/tmp/pool-worktrees/tree-3'"
-    The stderr should not include 'Cd there with gwtcd'
+    The stderr should not include 'Go there now'
     The output should be blank
   End
 
@@ -60,7 +60,7 @@ Describe '_git-co-offer-gwtcd'
 
     When call _git-co-offer-gwtcd /tmp/pool-worktrees/tree-3
     The status should be success
-    The stderr should include 'Cd there with gwtcd'
+    The stderr should include 'Go there now'
     The output should eq 'gwtcd:tree-3'
   End
 
