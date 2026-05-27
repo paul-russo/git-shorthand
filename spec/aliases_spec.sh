@@ -22,11 +22,6 @@ Describe 'git shorthand aliases'
     The output should eq 'git status'
   End
 
-  It 'gco expands to git checkout'
-    When call eval 'gco branch-name'
-    The output should eq 'git checkout branch-name'
-  End
-
   It 'gpp expands to git push'
     When call eval 'gpp'
     The output should eq 'git push'

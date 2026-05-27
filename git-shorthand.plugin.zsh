@@ -92,14 +92,40 @@ alias gstpo="git stash pop"
 alias gp="git pull"
 alias gpp="git push"
 alias gb="git branch"
-alias gco="git checkout"
+# Wrapper around git checkout. When the target branch is already checked out in
+# another worktree, interactive shells may cd there via gwtcd instead.
+gco () {
+    local err wt_path output
+    err=$(mktemp "${TMPDIR:-/tmp}/git-shorthand-gco.XXXXXX") || return 1
+
+    if git checkout "$@" 2>"$err"; then
+        [[ -s "$err" ]] && cat "$err" >&2
+        rm -f "$err"
+        return 0
+    fi
+
+    output=$(<"$err")
+    rm -f "$err"
+
+    if wt_path=$(_git-co-parse-worktree-in-use "$output"); then
+        print -r -- "$output" >&2
+        _git-co-offer-gwtcd "$wt_path" && return 0
+    fi
+
+    print -r -- "$output" >&2
+    return 1
+}
+
 alias gcob="git checkout -b"
 alias gl="git log"
 alias gpr="git pull --rebase --autostash"
 
 # Aliases for working with main branch
 alias gfm="git fetch origin \$(git-main-branch):\$(git-main-branch)"  # Fetch main
-alias gcom="git checkout \$(git-main-branch)"  # Checkout main (when available)
+# Checkout main; uses gco so a branch held in a pool slot can route to gwtcd.
+gcom () {
+    gco "$(git-main-branch)"
+}
 
 # Git shorthand functions
 gcpp () {
@@ -178,6 +204,52 @@ gfmnb () {
 # The soft cap is the point at which gwta/gfmwta/gwtco will stop lazily
 # creating new slots and instead prompt the user to release one or grow.
 typeset -g _GIT_WT_POOL_SOFT_CAP=6
+
+# Helper: extract the holding worktree path from a failed git checkout message.
+_git-co-parse-worktree-in-use () {
+    local msg="$1"
+
+    if [[ "$msg" =~ ' is already used by worktree at '\''([^'\'']+)'\''' ]]; then
+        print -r -- "${match[1]}"
+        return 0
+    fi
+
+    return 1
+}
+
+# Helper: whether gco may prompt on stdin (true in an interactive terminal).
+_git-co-can-prompt () {
+    [[ -t 0 ]]
+}
+
+# Helper: offer to cd into the worktree that holds the branch in interactive shells.
+_git-co-offer-gwtcd () {
+    local wt_path="$1"
+    local slot_name="${wt_path:t}"
+
+    _git-co-can-prompt || return 1
+
+    _git-sh-init-colors 2
+
+    print -n -- "${_GS_C_TAG}gco:${_GS_C_RST} ${_GS_C_BRANCH}$slot_name${_GS_C_RST} holds this branch at ${_GS_C_PATH}$wt_path${_GS_C_RST}. ${_GS_C_BOLD}Cd there with gwtcd? [y/N]:${_GS_C_RST} " >&2
+    local reply
+    if ! read -r reply; then
+        return 1
+    fi
+
+    case "$reply" in
+        y|Y|yes|YES)
+            if gwtcd "$slot_name" 2>/dev/null; then
+                return 0
+            fi
+            cd "$wt_path" || return 1
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
 
 # Helper: resolve the main worktree directory for the current repo.
 _git-main-worktree () {
