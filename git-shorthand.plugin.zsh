@@ -1026,25 +1026,20 @@ _git-wt-gwtcd-name-tiebreak () {
 }
 
 # cd into a slot by fuzzy substring match against slot directory names AND branch
-# names. The primary checkout participates as the synthetic "root" slot, so the
-# literal "root" and the branch it currently holds (e.g. "main") both route to
-# it. Ambiguous matches print the candidate list and fail; no match prints
-# what's available and fails.
+# names. The primary checkout participates as the synthetic "root" slot, so no
+# query, the literal "root", and the branch it currently holds (e.g. "main") all
+# route to it. Ambiguous matches print the candidate list and fail; no match
+# prints what's available and fails.
 gwtcd () {
     local query="$1"
 
     _git-sh-init-colors 2
 
-    [[ -n "$query" ]] || {
-        print -r -- "usage: gwtcd <fuzzy>" >&2
-        return 2
-    }
-
     local main_wt
     main_wt=$(_git-main-worktree 2>/dev/null)
 
-    # The literal target "root" always routes to the primary checkout.
-    if [[ "$query" == "root" ]]; then
+    # No query and the literal target "root" always route to the primary checkout.
+    if [[ -z "$query" || "$query" == "root" ]]; then
         [[ -n "$main_wt" ]] || return 1
         cd "$main_wt" || return 1
         return 0

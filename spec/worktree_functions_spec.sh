@@ -974,6 +974,13 @@ Describe 'gwtcd (cd by fuzzy match)'
     The variable GWTCD_CD_PATH should eq '/tmp/main-repo'
   End
 
+  It 'cds into the primary worktree when no query is given'
+    _git-main-worktree() { print -r -- /tmp/main-repo; }
+
+    When call gwtcd
+    The variable GWTCD_CD_PATH should eq '/tmp/main-repo'
+  End
+
   It 'cds into the primary worktree when the query matches the root branch'
     _git-main-worktree() { print -r -- /tmp/main-repo; }
     _git-wt-pool-slots() { printf '/tmp/wt/tree-1\n'; }
@@ -1127,9 +1134,10 @@ Describe 'gwtcd (cd by fuzzy match)'
     The status should be failure
   End
 
-  It 'requires a query argument'
+  It 'fails when no query is given and the primary worktree cannot be resolved'
+    _git-main-worktree() { return 1; }
+
     When call gwtcd
-    The stderr should include 'usage:'
     The status should be failure
   End
 End
