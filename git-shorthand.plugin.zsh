@@ -390,8 +390,8 @@ _git-wt-install-deps () {
     _git-sh-init-colors 1
 
     if [[ -f "$target_root/pnpm-lock.yaml" ]]; then
-        print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} running ${_GS_C_BOLD}pnpm install --prefer-offline${_GS_C_RST}"
-        (cd "$target_root" && _git-wt-run-with-optional-mise pnpm install --prefer-offline)
+        print -r -- "${_GS_C_TAG}gwtpool:${_GS_C_RST} running ${_GS_C_BOLD}pnpm install --frozen-lockfile --prefer-offline${_GS_C_RST}"
+        (cd "$target_root" && _git-wt-run-with-optional-mise pnpm install --frozen-lockfile --prefer-offline)
         return
     fi
 
