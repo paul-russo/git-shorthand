@@ -1789,6 +1789,60 @@ gwtprune () {
     (( prune_status == 0 && failed == 0 ))
 }
 
+# Remove idle pool slots until the pool size is at or below _GIT_WT_POOL_SOFT_CAP.
+# Prefers highest-numbered idle slots so numbering stays dense after a grow.
+# Never removes active, dirty, or current slots. Exits non-zero if the pool is
+# still over the soft cap after every eligible idle slot has been removed.
+gwtshrink () {
+    _git-sh-init-colors 1
+
+    local -a slots idle_slots
+    local slot state
+    for slot in "${(@f)$(_git-wt-pool-slots)}"; do
+        [[ -z "$slot" ]] && continue
+        slots+=("$slot")
+        state=$(_git-wt-slot-state "$slot")
+        [[ "$state" == "idle" ]] && idle_slots+=("$slot")
+    done
+
+    local count=${#slots}
+    local soft_cap=$_GIT_WT_POOL_SOFT_CAP
+
+    if (( count <= soft_cap )); then
+        print -r -- "${_GS_C_TAG}gwtshrink:${_GS_C_RST} pool already at or below soft cap (${_GS_C_BOLD}$count${_GS_C_RST}/${_GS_C_BOLD}$soft_cap${_GS_C_RST})"
+        return 0
+    fi
+
+    local excess=$(( count - soft_cap ))
+    print -r -- "${_GS_C_TAG}gwtshrink:${_GS_C_RST} pool over soft cap (${_GS_C_BOLD}$count${_GS_C_RST}/${_GS_C_BOLD}$soft_cap${_GS_C_RST}); removing up to ${_GS_C_BOLD}$excess${_GS_C_RST} idle slot(s)..."
+
+    # Highest-numbered first: slots from _git-wt-pool-slots are ascending by N.
+    local removed=0 failed=0 i
+    for (( i = ${#idle_slots}; i >= 1; i-- )); do
+        (( removed + failed >= excess )) && break
+
+        slot="${idle_slots[$i]}"
+        print -r -- "${_GS_C_TAG}gwtshrink:${_GS_C_RST} removing ${_GS_C_PATH}$slot${_GS_C_RST}"
+        if git worktree remove --force "$slot"; then
+            (( removed += 1 ))
+        else
+            (( failed += 1 ))
+        fi
+    done
+
+    local remaining=$(( count - removed ))
+    local fail_color="$_GS_C_OK"
+    (( failed > 0 || remaining > soft_cap )) && fail_color="$_GS_C_ERR"
+    print -r -- "${_GS_C_TAG}gwtshrink:${_GS_C_RST} removed ${_GS_C_OK}$removed${_GS_C_RST} slot(s), failed ${fail_color}$failed${_GS_C_RST} (now ${_GS_C_BOLD}$remaining${_GS_C_RST}/${_GS_C_BOLD}$soft_cap${_GS_C_RST})"
+
+    if (( remaining > soft_cap )); then
+        print -r -- "${_GS_C_TAG}gwtshrink:${_GS_C_RST} ${_GS_C_WARN}still over soft cap${_GS_C_RST}; release active slots with ${_GS_C_BOLD}gwtd${_GS_C_RST}/${_GS_C_BOLD}gwtprune${_GS_C_RST} first" >&2
+        return 1
+    fi
+
+    (( failed == 0 ))
+}
+
 # Pull from main
 alias gpm="git pull origin \$(git-main-branch)"
 

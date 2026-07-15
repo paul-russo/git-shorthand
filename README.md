@@ -19,7 +19,7 @@ Currently, the exceptions to these rules are:
 - The `git-main-branch` utility function, which dynamically detects whether the repo uses `master` or `main`
 
 ## Color output
-Status messages from the worktree and prune commands (`gwta`, `gwtco`, `gwtl`, `gwtd`, `gwtcd`, `gwtprune`, `gbprune`, `gpbprune`, and the internal `gwtpool:` lines) emit ANSI color when stdout/stderr is a TTY. Colors are semantic: command tags (e.g. `gwta:`) are bold cyan, branch refs are yellow, paths are blue, success is green, warnings/dirty state are yellow, errors are red. The `gwtl` table colors the STATE column per state (`active` green, `dirty` bold yellow, `current` bold cyan, `idle` dim).
+Status messages from the worktree and prune commands (`gwta`, `gwtco`, `gwtl`, `gwtd`, `gwtcd`, `gwtprune`, `gwtshrink`, `gbprune`, `gpbprune`, and the internal `gwtpool:` lines) emit ANSI color when stdout/stderr is a TTY. Colors are semantic: command tags (e.g. `gwta:`) are bold cyan, branch refs are yellow, paths are blue, success is green, warnings/dirty state are yellow, errors are red. The `gwtl` table colors the STATE column per state (`active` green, `dirty` bold yellow, `current` bold cyan, `idle` dim).
 
 Color is automatically suppressed when output is redirected to a pipe or file, when `TERM` is `dumb`, and when either `NO_COLOR` (see [no-color.org](https://no-color.org)) or `GIT_SHORTHAND_NO_COLOR` is set.
 
@@ -55,6 +55,7 @@ Branch/worktree name completion uses the same slash-aware matching as zsh’s st
 | `r` | `--rebase --autostash` |
 | `rn` | rename |
 | `s` | `status` |
+| `shrink` | shrink pool |
 | `st` | `stash` |
 | `wt` | `worktree` |
 | `x` | `--staged` |
@@ -79,7 +80,7 @@ If you keep work in pool slots, run `gwtprune` before `gbprune` so stale branche
 Worktrees live in a recycled **pool** under a `{repo_name}-worktrees/` sibling directory. Each slot is a long-lived checkout named `tree-1`, `tree-2`, … that keeps its own `node_modules` and build state. Activating a slot means checking a branch out into it; releasing a slot detaches HEAD so it can be reused. Install runs only when the lockfile actually changed between the previous and current HEAD, so common branch hops are nearly instant.
 
 ### Pool model
-- **Pool soft cap.** New slots are created on demand up to `_GIT_WT_POOL_SOFT_CAP` (default `6`). When you ask for another slot after the cap is reached and no idle slot is available, `gwta`/`gfmwta`/`gwtco` show an interactive picker that lets you (1) pick an active slot to release and reuse, (2) `g` to grow the pool past the cap, or (3) `q` to cancel. In non-interactive shells (stdin not a TTY and closed before a choice is read) the picker lists occupied slots on stderr and fails with a short hint (`gwtd`, `gwtprune`, or an interactive terminal) instead of exiting silently.
+- **Pool soft cap.** New slots are created on demand up to `_GIT_WT_POOL_SOFT_CAP` (default `6`). When you ask for another slot after the cap is reached and no idle slot is available, `gwta`/`gfmwta`/`gwtco` show an interactive picker that lets you (1) pick an active slot to release and reuse, (2) `g` to grow the pool past the cap, or (3) `q` to cancel. In non-interactive shells (stdin not a TTY and closed before a choice is read) the picker lists occupied slots on stderr and fails with a short hint (`gwtd`, `gwtprune`, or an interactive terminal) instead of exiting silently. After growing past the cap, run `gwtshrink` to delete idle slots back down to the soft cap.
 - **Slot states.**
   - `idle` — detached HEAD, clean working tree. Eligible for reuse.
   - `active` — branch checked out, clean.
@@ -96,3 +97,4 @@ Worktrees live in a recycled **pool** under a `{repo_name}-worktrees/` sibling d
 - `gwtl [--dirty]` — print the pool as a table sorted by slot mtime descending. Columns: `BRANCH | STATE | LAST MODIFIED | PATH`. The primary repo is pinned at the top with `(main repo)` in the STATE column. By default the dirty check is skipped so listing stays snappy on large monorepos; pass `--dirty` to additionally report which slots have uncommitted tracked-file changes.
 - `gwtd [--delete-branch] [--force] <branch>` — release the slot that currently holds `<branch>`: detach HEAD, optionally also delete the branch. Refreshes the index before the dirty check so release agrees with `git status`. Refuses dirty without `--force`. Always refuses the current slot (cd elsewhere first).
 - `gwtprune` — fetch with prune, then release every pool slot whose branch is stale by the same rules as `gbprune` (detach HEAD and delete the stale branch). Slots stay in the pool. Skips dirty and current slots. Finishes with `git worktree prune -v`.
+- `gwtshrink` — if the pool has more slots than `_GIT_WT_POOL_SOFT_CAP`, permanently remove idle slots (highest-numbered first) with `git worktree remove --force` until the pool is back at the soft cap. Never removes active, dirty, or current slots; exits non-zero if still over the soft cap after every eligible idle slot is gone.

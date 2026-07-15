@@ -1435,3 +1435,77 @@ Describe 'gwtprune (release stale slots)'
     The output should include 'released 0 slot(s), failed 0'
   End
 End
+
+Describe 'gwtshrink (remove idle slots over soft cap)'
+  It 'does nothing when the pool is at or below the soft cap'
+    _GIT_WT_POOL_SOFT_CAP=3
+    _git-wt-pool-slots() { printf '/tmp/tree-1\n/tmp/tree-2\n'; }
+    _git-wt-slot-state() { print -r -- 'idle'; }
+
+    When call gwtshrink
+    The status should be success
+    The output should include 'pool already at or below soft cap (2/3)'
+    The output should not include 'removing'
+  End
+
+  It 'removes highest-numbered idle slots until the soft cap'
+    _GIT_WT_POOL_SOFT_CAP=2
+    Mock git
+      case "$*" in
+        "worktree remove --force /tmp/tree-4"|"worktree remove --force /tmp/tree-3")
+          print -r -- "git $*"
+          ;;
+        *)
+          exit 1
+          ;;
+      esac
+    End
+
+    _git-wt-pool-slots() { printf '/tmp/tree-1\n/tmp/tree-2\n/tmp/tree-3\n/tmp/tree-4\n'; }
+    _git-wt-slot-state() {
+      case "$1" in
+        */tree-1) print -r -- 'active' ;;
+        */tree-2) print -r -- 'idle' ;;
+        */tree-3) print -r -- 'idle' ;;
+        */tree-4) print -r -- 'idle' ;;
+      esac
+    }
+
+    When call gwtshrink
+    The status should be success
+    The output should include 'pool over soft cap (4/2)'
+    The output should include 'git worktree remove --force /tmp/tree-4'
+    The output should include 'git worktree remove --force /tmp/tree-3'
+    The output should not include 'git worktree remove --force /tmp/tree-2'
+    The output should include 'removed 2 slot(s), failed 0 (now 2/2)'
+  End
+
+  It 'fails when still over soft cap after removing every idle slot'
+    _GIT_WT_POOL_SOFT_CAP=1
+    Mock git
+      case "$*" in
+        "worktree remove --force /tmp/tree-3")
+          print -r -- "git $*"
+          ;;
+        *)
+          exit 1
+          ;;
+      esac
+    End
+
+    _git-wt-pool-slots() { printf '/tmp/tree-1\n/tmp/tree-2\n/tmp/tree-3\n'; }
+    _git-wt-slot-state() {
+      case "$1" in
+        */tree-1) print -r -- 'active' ;;
+        */tree-2) print -r -- 'dirty' ;;
+        */tree-3) print -r -- 'idle' ;;
+      esac
+    }
+
+    When call gwtshrink
+    The status should be failure
+    The output should include 'git worktree remove --force /tmp/tree-3'
+    The output should include 'removed 1 slot(s), failed 0 (now 2/1)'
+    The stderr should include 'still over soft cap'
+  End
+End
