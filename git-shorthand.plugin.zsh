@@ -1796,17 +1796,33 @@ gwtprune () {
 gwtshrink () {
     _git-sh-init-colors 1
 
+    # Announce immediately: classifying slots runs a dirty check per path and
+    # can take a noticeable beat on large monorepos before any remove starts.
+    print -r -- "${_GS_C_TAG}gwtshrink:${_GS_C_RST} scanning pool..."
+
     local -a slots idle_slots
     local slot state
     for slot in "${(@f)$(_git-wt-pool-slots)}"; do
         [[ -z "$slot" ]] && continue
         slots+=("$slot")
-        state=$(_git-wt-slot-state "$slot")
-        [[ "$state" == "idle" ]] && idle_slots+=("$slot")
     done
 
     local count=${#slots}
     local soft_cap=$_GIT_WT_POOL_SOFT_CAP
+    local i
+
+    if (( count == 0 )); then
+        print -r -- "${_GS_C_TAG}gwtshrink:${_GS_C_RST} pool empty (0/${_GS_C_BOLD}$soft_cap${_GS_C_RST})"
+        return 0
+    fi
+
+    print -r -- "${_GS_C_TAG}gwtshrink:${_GS_C_RST} checking ${_GS_C_BOLD}$count${_GS_C_RST} slot(s)..."
+    for (( i = 1; i <= count; i++ )); do
+        slot="${slots[$i]}"
+        state=$(_git-wt-slot-state "$slot")
+        print -r -- "${_GS_C_TAG}gwtshrink:${_GS_C_RST}   ${_GS_C_BOLD}$i${_GS_C_RST}/${_GS_C_BOLD}$count${_GS_C_RST} ${_GS_C_PATH}${slot:t}${_GS_C_RST} ${state}"
+        [[ "$state" == "idle" ]] && idle_slots+=("$slot")
+    done
 
     if (( count <= soft_cap )); then
         print -r -- "${_GS_C_TAG}gwtshrink:${_GS_C_RST} pool already at or below soft cap (${_GS_C_BOLD}$count${_GS_C_RST}/${_GS_C_BOLD}$soft_cap${_GS_C_RST})"
@@ -1814,19 +1830,26 @@ gwtshrink () {
     fi
 
     local excess=$(( count - soft_cap ))
-    print -r -- "${_GS_C_TAG}gwtshrink:${_GS_C_RST} pool over soft cap (${_GS_C_BOLD}$count${_GS_C_RST}/${_GS_C_BOLD}$soft_cap${_GS_C_RST}); removing up to ${_GS_C_BOLD}$excess${_GS_C_RST} idle slot(s)..."
+    local to_remove=$excess
+    (( ${#idle_slots} < to_remove )) && to_remove=${#idle_slots}
+    print -r -- "${_GS_C_TAG}gwtshrink:${_GS_C_RST} over soft cap (${_GS_C_BOLD}$count${_GS_C_RST}/${_GS_C_BOLD}$soft_cap${_GS_C_RST}); ${_GS_C_BOLD}${#idle_slots}${_GS_C_RST} idle, removing ${_GS_C_BOLD}$to_remove${_GS_C_RST}..."
 
     # Highest-numbered first: slots from _git-wt-pool-slots are ascending by N.
-    local removed=0 failed=0 i
+    # `git worktree remove --force` can take a long time with warm node_modules,
+    # so print before and after each removal.
+    local removed=0 failed=0 step=0
     for (( i = ${#idle_slots}; i >= 1; i-- )); do
         (( removed + failed >= excess )) && break
 
         slot="${idle_slots[$i]}"
-        print -r -- "${_GS_C_TAG}gwtshrink:${_GS_C_RST} removing ${_GS_C_PATH}$slot${_GS_C_RST}"
+        (( step += 1 ))
+        print -r -- "${_GS_C_TAG}gwtshrink:${_GS_C_RST} removing ${_GS_C_BOLD}$step${_GS_C_RST}/${_GS_C_BOLD}$to_remove${_GS_C_RST} ${_GS_C_PATH}$slot${_GS_C_RST}..."
         if git worktree remove --force "$slot"; then
             (( removed += 1 ))
+            print -r -- "${_GS_C_TAG}gwtshrink:${_GS_C_RST} ${_GS_C_OK}removed${_GS_C_RST} ${_GS_C_PATH}$slot${_GS_C_RST}"
         else
             (( failed += 1 ))
+            print -r -- "${_GS_C_TAG}gwtshrink:${_GS_C_RST} ${_GS_C_ERR}failed${_GS_C_RST} to remove ${_GS_C_PATH}$slot${_GS_C_RST}" >&2
         fi
     done
 

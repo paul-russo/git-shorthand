@@ -1444,6 +1444,8 @@ Describe 'gwtshrink (remove idle slots over soft cap)'
 
     When call gwtshrink
     The status should be success
+    The output should include 'scanning pool...'
+    The output should include 'checking 2 slot(s)...'
     The output should include 'pool already at or below soft cap (2/3)'
     The output should not include 'removing'
   End
@@ -1473,7 +1475,11 @@ Describe 'gwtshrink (remove idle slots over soft cap)'
 
     When call gwtshrink
     The status should be success
-    The output should include 'pool over soft cap (4/2)'
+    The output should include 'scanning pool...'
+    The output should include 'checking 4 slot(s)...'
+    The output should include 'over soft cap (4/2); 3 idle, removing 2...'
+    The output should include 'removing 1/2 /tmp/tree-4...'
+    The output should include 'removing 2/2 /tmp/tree-3...'
     The output should include 'git worktree remove --force /tmp/tree-4'
     The output should include 'git worktree remove --force /tmp/tree-3'
     The output should not include 'git worktree remove --force /tmp/tree-2'
@@ -1504,6 +1510,7 @@ Describe 'gwtshrink (remove idle slots over soft cap)'
 
     When call gwtshrink
     The status should be failure
+    The output should include 'over soft cap (3/1); 1 idle, removing 1...'
     The output should include 'git worktree remove --force /tmp/tree-3'
     The output should include 'removed 1 slot(s), failed 0 (now 2/1)'
     The stderr should include 'still over soft cap'
